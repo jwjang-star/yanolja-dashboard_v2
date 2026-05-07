@@ -1,0 +1,6 @@
+__pycache__/
+.env
+.vscode/
+*.pyc
+# 만약 수집 데이터(CSV)도 비공개하고 싶다면 아래 주석 해제
+# data/*.csv
