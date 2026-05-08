@@ -66,7 +66,10 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         df_c = read_data(f3)
 
 
-    # 전처리 및 병합
+# 💡 [전처리] 텍스트 공백 제거 및 숫자 변환
+    df_p['대실상태'] = df_p['대실상태'].astype(str).str.strip()
+    df_p['숙박상태'] = df_p['숙박상태'].astype(str).str.strip()
+    
     df_p['지점코드_s'] = df_p['지점코드'].astype(str).str.split('.').str[0]
     df_p['대실_n'] = df_p['대실금액'].apply(to_num)
     df_p['숙박_n'] = df_p['숙박금액'].apply(to_num)
@@ -75,6 +78,7 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
     df_c['지점코드_s'] = df_c['지점코드'].astype(str).str.split('.').str[0]
     df_c['비교자사_s'] = df_c['비교대상자사코드'].astype(str).str.split('.').str[0]
 
+    # [병합]
     df_merged = pd.merge(df_p, df_c[['지점코드_s', '구분', '비교자사_s', '상권명']], on='지점코드_s', how='left')
     df_merged['구분'] = df_merged['구분'].fillna('자사')
     df_merged['매칭코드'] = df_merged.apply(lambda x: x['비교자사_s'] if x['구분'] == '경쟁사' else x['지점코드_s'], axis=1)
@@ -82,23 +86,43 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
     df_final = pd.merge(df_merged, df_m[['지점코드_s', '현장담당자', '사업본부', '분류']], 
                         left_on='매칭코드', right_on='지점코드_s', how='left', suffixes=('', '_m'))
 
-    # 자사 데이터 기준값 계산
+    # ------------------------------------------------------------------
+    # 💡 [요약 데이터 계산] 딥씽크 보완 로직 적용
+    # ------------------------------------------------------------------
     our_df_all = df_final[df_final['구분'] == '자사'].copy()
-    med_d = our_df_all[our_df_all['대실_n'] > 0]['대실_n'].median()
-    med_s = our_df_all[our_df_all['숙박_n'] > 0]['숙박_n'].median()
-
-    # 요약 정보 계산
     total_rooms = len(our_df_all)
-    closed_df = our_df_all[(our_df_all['대실_n'] == 0) & (our_df_all['숙박_n'] == 0)]
+
+    # 1. 중앙값 계산 (0원인 데이터는 기준값 계산에서 제외해야 정확함)
+    valid_d = our_df_all[our_df_all['대실_n'] > 0]['대실_n']
+    valid_s = our_df_all[our_df_all['숙박_n'] > 0]['숙박_n']
+    med_d = valid_d.median() if not valid_d.empty else 0
+    med_s = valid_s.median() if not valid_s.empty else 0
+
+    # 2. 마감/미판매 집계 (텍스트 '마감'이거나 금액이 0원이면 마감으로 인정)
+    # 현재 & (대실/숙박 둘 다 마감)로 설정. 대실이나 숙박 중 하나만 마감이어도 
+    # 세고 싶으시다면 아래의 & 를 | 로 바꾸세요!
+    closed_df = our_df_all[
+        ((our_df_all['대실상태'] == '마감') | (our_df_all['대실_n'] == 0)) & 
+        ((our_df_all['숙박상태'] == '마감') | (our_df_all['숙박_n'] == 0))
+    ]
     closed_cnt = len(closed_df)
-    issue_df = our_df_all[(our_df_all['대실_n'] > med_d * 2.0) | (our_df_all['숙박_n'] > med_s * 2.0)]
+
+    # 3. 이상 고단가 집계
+    if med_d > 0 and med_s > 0:
+        issue_df = our_df_all[(our_df_all['대실_n'] > med_d * 2.0) | (our_df_all['숙박_n'] > med_s * 2.0)]
+    else:
+        issue_df = pd.DataFrame()
     issue_cnt = len(issue_df)
 
     # 상단 요약 (Overview)
     st.markdown("<div class='overview-title'>📊 통합 운영 개요 (Overview)</div>", unsafe_allow_html=True)
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("총 모니터링 객실", f"{total_rooms:,}개")
-    c2.metric("마감/미판매 (전체 하이픈)", f"{closed_cnt:,}개", f"전체의 {closed_cnt/total_rooms*100:.1f}%")
+    
+    # 0 나누기 에러 방지 방어 코드 추가
+    percent_closed = (closed_cnt / total_rooms * 100) if total_rooms > 0 else 0
+    c2.metric("마감/미판매 (전체 하이픈)", f"{closed_cnt:,}개", f"전체의 {percent_closed:.1f}%")
+    
     c3.metric("판매 중 객실", f"{total_rooms - closed_cnt:,}개")
     c4.metric("점검 필요 (이상 고단가)", f"{issue_cnt:,}개", delta="확인 요망", delta_color="inverse")
     

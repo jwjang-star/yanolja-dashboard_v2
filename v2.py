@@ -96,20 +96,4 @@ if crawled_data:
     # 최종 저장
     df.to_csv('data/price_data_new.csv', index=False, encoding='utf-8-sig')
     print(f"\n🎉 모든 작업 완료! 'data/price_data_new.csv' 파일이 업데이트 되었습니다.")
-    import os
-
-# ... (기존 저장 코드 아래에 추가) ...
-
-# 5. 깃허브 자동 업로드 (선택 사항)
-def upload_to_github():
-    print("\n⬆️ 깃허브에 최신 데이터를 업로드하는 중...")
-    try:
-        os.system("git add data/price_data_new.csv")
-        os.system('git commit -m "Auto-update price data: ' + datetime.now().strftime("%Y-%m-%d %H:%M") + '"')
-        os.system("git push origin master")
-        print("✅ 깃허브 업로드 완료!")
-    except Exception as e:
-        print(f"❌ 깃허브 업로드 실패: {e}")
-
-# 업로드 함수 실행
-upload_to_github()
+    
