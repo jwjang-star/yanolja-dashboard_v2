@@ -163,7 +163,7 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         sel_hotel = st.selectbox("심층 분석할 지점을 선택하세요", sorted(our_df_all['숙소명'].unique()))
         
         if sel_hotel:
-            target_df = our_df_all[our_df_all['숙소명'] == sel_hotel]
+            target_df = our_df_all[our_df_all['숙소명'] == sel_hotel].copy()
             
             st.markdown("**객실타입별 요금 비교 차트**")
             if not target_df.empty:
@@ -175,15 +175,24 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
                 fig_bar.update_layout(yaxis_title=None, xaxis_title="요금(원)")
                 st.plotly_chart(fig_bar, use_container_width=True)
 
+            # --- [표 1 & 2] 지점별 요금 상세 포맷팅 ---
             col_t1, col_t2 = st.columns(2)
+            
             with col_t1:
                 st.markdown("**[대실] 요금 상세**")
-                st.dataframe(target_df[['객실타입', '대실상태', '대실금액']].reset_index(drop=True), use_container_width=True)
+                # 보여주기용 데이터 복사 및 포맷팅
+                disp_t1 = target_df[['객실타입', '대실상태', '대실금액']].copy()
+                disp_t1['대실금액'] = disp_t1['대실금액'].apply(lambda x: f"{int(float(str(x).replace(',',''))):,}원" if str(x).replace(',','').replace('.','').isdigit() else x)
+                st.dataframe(disp_t1.reset_index(drop=True), use_container_width=True)
+                
             with col_t2:
                 st.markdown("**[숙박] 요금 상세**")
-                st.dataframe(target_df[['객실타입', '숙박상태', '숙박금액']].reset_index(drop=True), use_container_width=True)
+                # 보여주기용 데이터 복사 및 포맷팅
+                disp_t2 = target_df[['객실타입', '숙박상태', '숙박금액']].copy()
+                disp_t2['숙박금액'] = disp_t2['숙박금액'].apply(lambda x: f"{int(float(str(x).replace(',',''))):,}원" if str(x).replace(',','').replace('.','').isdigit() else x)
+                st.dataframe(disp_t2.reset_index(drop=True), use_container_width=True)
 
-        # 특이 사항 점검
+        # 특이 사항 점검 (이상 고단가)
         st.markdown("<div class='section-header'>🚨 핵심 점검 사항 (이상 고단가)</div>", unsafe_allow_html=True)
         with st.container():
             st.markdown(f"""
@@ -194,10 +203,16 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
             </div>
             """, unsafe_allow_html=True)
             
-            issue_d = our_df_all[our_df_all['대실_n'] > med_d * 2.0][['현장담당자', '숙소명', '객실타입', '대실금액']]
+            # --- [표 3 & 4] 고단가 지점 포맷팅 ---
+            issue_d = our_df_all[our_df_all['대실_n'] > med_d * 2.0][['현장담당자', '숙소명', '객실타입', '대실금액']].copy()
             issue_d.columns = ['현장담당자', '지점명', '객실명', '금액']
-            issue_s = our_df_all[our_df_all['숙박_n'] > med_s * 2.0][['현장담당자', '숙소명', '객실타입', '숙박금액']]
+            # 금액 컬럼 포맷팅
+            issue_d['금액'] = issue_d['금액'].apply(lambda x: f"{int(float(str(x).replace(',',''))):,}원" if str(x).replace(',','').replace('.','').isdigit() else x)
+
+            issue_s = our_df_all[our_df_all['숙박_n'] > med_s * 2.0][['현장담당자', '숙소명', '객실타입', '숙박금액']].copy()
             issue_s.columns = ['현장담당자', '지점명', '객실명', '금액']
+            # 금액 컬럼 포맷팅
+            issue_s['금액'] = issue_s['금액'].apply(lambda x: f"{int(float(str(x).replace(',',''))):,}원" if str(x).replace(',','').replace('.','').isdigit() else x)
 
             col_i1, col_i2 = st.columns(2)
             with col_i1:
