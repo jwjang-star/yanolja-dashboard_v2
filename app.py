@@ -78,13 +78,27 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
     df_c['지점코드_s'] = df_c['지점코드'].astype(str).str.split('.').str[0]
     df_c['비교자사_s'] = df_c['비교대상자사코드'].astype(str).str.split('.').str[0]
 
-    # [병합]
+    # [기존 코드 그대로 유지]
     df_merged = pd.merge(df_p, df_c[['지점코드_s', '구분', '비교자사_s', '상권명']], on='지점코드_s', how='left')
     df_merged['구분'] = df_merged['구분'].fillna('자사')
     df_merged['매칭코드'] = df_merged.apply(lambda x: x['비교자사_s'] if x['구분'] == '경쟁사' else x['지점코드_s'], axis=1)
     
     df_final = pd.merge(df_merged, df_m[['지점코드_s', '현장담당자', '사업본부', '분류']], 
                         left_on='매칭코드', right_on='지점코드_s', how='left', suffixes=('', '_m'))
+
+    # 💡💡💡 [추가할 내용] 병합 직후에 데이터가 잘 들어왔는지 눈으로 확인하는 진단 코드 💡💡💡
+    st.write("### 🔍 매치 파일(comp_match) 진단소")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write(f"1. 불러온 매치 파일(df_c) 행 개수: {len(df_c)}개")
+        # 실제 매치 파일 데이터가 어떻게 읽히고 있는지 화면에 표로 띄워봅니다.
+        st.dataframe(df_c[['지점코드_s', '구분', '상권명']].head(10)) 
+    with col2:
+        st.write("2. 합체 후 데이터 결과")
+        st.write(f"- 자사 데이터: {len(df_final[df_final['구분']=='자사'])}개")
+        st.write(f"- 경쟁사 데이터: {len(df_final[df_final['구분']=='경쟁사'])}개")
+        
+        # 만약 여기서 경쟁사 데이터가 0개로 나오면, 지점코드 매칭이 실패한 것입니다!
 
     # ------------------------------------------------------------------
     # 💡 [요약 데이터 계산] 딥씽크 보완 로직 적용
