@@ -149,12 +149,23 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         target_mgr = st.multiselect("특정 담당자 지점만 보기 (미선택 시 전체)", sorted(our_df_all['현장담당자'].unique()))
         plot_df = our_df_all if not target_mgr else our_df_all[our_df_all['현장담당자'].isin(target_mgr)]
 
-        for label, col, med_val in [("대실 가격 분포", "대실_n", med_d), ("숙박 가격 분포", "숙박_n", med_s)]:
-            df_scat = plot_df[plot_df[col] > 0]
-            fig = px.scatter(df_scat, x='숙소명', y=col, color='사업본부', hover_data=['객실타입', '대실금액' if col=='대실_n' else '숙박금액'], height=400)
-            fig.add_hline(y=med_val, line_dash="dash", line_color="#f43f5e", annotation_text=f"중앙값 ({med_val:,.0f}원)", annotation_position="bottom right")
-            fig.update_layout(title=label, xaxis_title=None, yaxis_title="요금(원)", xaxis_showticklabels=False)
-            st.plotly_chart(fig, use_container_width=True)
+        # 💡 for문에 '상태 컬럼명'을 추가해서 대실과 숙박을 구분합니다.
+        for label, col, status_col, med_val in [("대실 가격 분포", "대실_n", "대실상태", med_d), ("숙박 가격 분포", "숙박_n", "숙박상태", med_s)]:
+            
+            # 💡 핵심 수정: '상태' 글자가 "마감"이 아닌 데이터만 뽑아냅니다.
+            df_scat = plot_df[plot_df[status_col] != '마감']
+            
+            # 만약 마감을 다 뺐더니 데이터가 하나도 없다면 에러 방지
+            if not df_scat.empty:
+                # hover_data(마우스 올렸을 때 뜨는 정보)에 '상태'도 보이게 추가해 두었습니다.
+                hover_cols = ['객실타입', status_col, '대실금액' if col=='대실_n' else '숙박금액']
+                
+                fig = px.scatter(df_scat, x='숙소명', y=col, color='사업본부', hover_data=hover_cols, height=400)
+                fig.add_hline(y=med_val, line_dash="dash", line_color="#f43f5e", annotation_text=f"중앙값 ({med_val:,.0f}원)", annotation_position="bottom right")
+                fig.update_layout(title=label, xaxis_title=None, yaxis_title="요금(원)", xaxis_showticklabels=False)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info(f"선택하신 조건에 해당하는 정상 판매 중인 {label.split()[0]} 객실이 없습니다.")
 
         st.divider()
 
