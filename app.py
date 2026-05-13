@@ -659,19 +659,22 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
             disp_cols = ['구분', '숙소명', '객실타입', '대실금액', '숙박금액']
             disp_df   = df_final[df_final['상권명'] == sel_area][disp_cols].sort_values(['구분', '숙소명'])
             
-            # 💡 [추가된 부분] 가격 표시 형식 설정 (콤마 + '원')
-            price_config = st.column_config.NumberColumn(format="%d원")
+            # 💡 [새로 추가된 부분] 콤마(,)와 '원'을 완벽하게 붙여주는 마법의 함수
+            disp_df_show = disp_df.copy()
             
-            # 💡 [수정된 부분] dataframe 안에 column_config를 추가해줍니다.
-            st.dataframe(
-                disp_df.reset_index(drop=True), 
-                use_container_width=True, 
-                height=300,
-                column_config={
-                    "대실금액": price_config,
-                    "숙박금액": price_config
-                }
-            )
+            def format_money(val):
+                try:
+                    # 숫자로 바꿀 수 있으면 콤마 찍고 원 붙이기 (예: 50000 -> 50,000원)
+                    return f"{int(float(val)):,}원"
+                except:
+                    # 마감됐거나 빈칸이면 하이픈(-)으로 깔끔하게 표시
+                    return "-"
+            
+            disp_df_show['대실금액'] = disp_df_show['대실금액'].apply(format_money)
+            disp_df_show['숙박금액'] = disp_df_show['숙박금액'].apply(format_money)
+
+            # 💡 [수정된 부분] column_config를 빼고, 변환된 데이터(disp_df_show)를 출력합니다.
+            st.dataframe(disp_df_show.reset_index(drop=True), use_container_width=True, height=300)
 
         st.divider()
 
