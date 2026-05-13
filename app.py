@@ -170,42 +170,6 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
                 st.info(f"선택하신 조건에 해당하는 정상 판매 중인 {label.split()[0]} 객실이 없습니다.")
             
 
-        st.divider()
-
-        # 지점별 심층 분석
-        st.markdown("<div class='section-header'>지점별 상세 분석 (객실 단위)</div>", unsafe_allow_html=True)
-        sel_hotel = st.selectbox("심층 분석할 지점을 선택하세요", sorted(our_df_all['숙소명'].unique()))
-        
-        if sel_hotel:
-            target_df = our_df_all[our_df_all['숙소명'] == sel_hotel].copy()
-            
-            st.markdown("**객실타입별 요금 비교 차트**")
-            if not target_df.empty:
-                melted = target_df.melt(id_vars=['객실타입'], value_vars=['대실_n', '숙박_n'], var_name='유형', value_name='가격')
-                melted['유형'] = melted['유형'].replace({'대실_n': '대실', '숙박_n': '숙박'})
-                
-                fig_bar = px.bar(melted, y='객실타입', x='가격', color='유형', barmode='group', orientation='h',
-                                 text_auto=',.0f', color_discrete_map={'대실': '#3b82f6', '숙박': '#10b981'}, height=450)
-                fig_bar.update_layout(yaxis_title=None, xaxis_title="요금(원)")
-                st.plotly_chart(fig_bar, use_container_width=True)
-
-            # --- [표 1 & 2] 지점별 요금 상세 포맷팅 ---
-            col_t1, col_t2 = st.columns(2)
-            
-            with col_t1:
-                st.markdown("**[대실] 요금 상세**")
-                # 보여주기용 데이터 복사 및 포맷팅
-                disp_t1 = target_df[['객실타입', '대실상태', '대실금액']].copy()
-                disp_t1['대실금액'] = disp_t1['대실금액'].apply(lambda x: f"{int(float(str(x).replace(',',''))):,}원" if str(x).replace(',','').replace('.','').isdigit() else x)
-                st.dataframe(disp_t1.reset_index(drop=True), use_container_width=True)
-                
-            with col_t2:
-                st.markdown("**[숙박] 요금 상세**")
-                # 보여주기용 데이터 복사 및 포맷팅
-                disp_t2 = target_df[['객실타입', '숙박상태', '숙박금액']].copy()
-                disp_t2['숙박금액'] = disp_t2['숙박금액'].apply(lambda x: f"{int(float(str(x).replace(',',''))):,}원" if str(x).replace(',','').replace('.','').isdigit() else x)
-                st.dataframe(disp_t2.reset_index(drop=True), use_container_width=True)
-
         # 특이 사항 점검 (이상 고단가)
         st.markdown("<div class='section-header'>🚨 핵심 점검 사항 (이상 고단가)</div>", unsafe_allow_html=True)
         with st.container():
@@ -332,6 +296,42 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         
         fig_r.update_layout(yaxis_title=None, xaxis_title="금액(원)", coloraxis_showscale=False)
         st.plotly_chart(fig_r, use_container_width=True)
+
+        st.divider()
+
+        # 지점별 심층 분석
+        st.markdown("<div class='section-header'>지점별 상세 분석 (객실 단위)</div>", unsafe_allow_html=True)
+        sel_hotel = st.selectbox("심층 분석할 지점을 선택하세요", sorted(our_df_all['숙소명'].unique()))
+        
+        if sel_hotel:
+            target_df = our_df_all[our_df_all['숙소명'] == sel_hotel].copy()
+            
+            st.markdown("**객실타입별 요금 비교 차트**")
+            if not target_df.empty:
+                melted = target_df.melt(id_vars=['객실타입'], value_vars=['대실_n', '숙박_n'], var_name='유형', value_name='가격')
+                melted['유형'] = melted['유형'].replace({'대실_n': '대실', '숙박_n': '숙박'})
+                
+                fig_bar = px.bar(melted, y='객실타입', x='가격', color='유형', barmode='group', orientation='h',
+                                 text_auto=',.0f', color_discrete_map={'대실': '#3b82f6', '숙박': '#10b981'}, height=450)
+                fig_bar.update_layout(yaxis_title=None, xaxis_title="요금(원)")
+                st.plotly_chart(fig_bar, use_container_width=True)
+
+            # --- [표 1 & 2] 지점별 요금 상세 포맷팅 ---
+            col_t1, col_t2 = st.columns(2)
+            
+            with col_t1:
+                st.markdown("**[대실] 요금 상세**")
+                # 보여주기용 데이터 복사 및 포맷팅
+                disp_t1 = target_df[['객실타입', '대실상태', '대실금액']].copy()
+                disp_t1['대실금액'] = disp_t1['대실금액'].apply(lambda x: f"{int(float(str(x).replace(',',''))):,}원" if str(x).replace(',','').replace('.','').isdigit() else x)
+                st.dataframe(disp_t1.reset_index(drop=True), use_container_width=True)
+                
+            with col_t2:
+                st.markdown("**[숙박] 요금 상세**")
+                # 보여주기용 데이터 복사 및 포맷팅
+                disp_t2 = target_df[['객실타입', '숙박상태', '숙박금액']].copy()
+                disp_t2['숙박금액'] = disp_t2['숙박금액'].apply(lambda x: f"{int(float(str(x).replace(',',''))):,}원" if str(x).replace(',','').replace('.','').isdigit() else x)
+                st.dataframe(disp_t2.reset_index(drop=True), use_container_width=True)
 
     # =========================================================================
     # TAB 3: 상권별 경쟁 분석 — 3층 구조 (스코어보드 → 드릴다운 → 액션)
