@@ -653,28 +653,37 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
 
             st.divider()
 
-            # ── 2-D. 상권 내 전체 요금표 ──────────────────────────────
+# ── 2-D. 상권 내 전체 요금표 ──────────────────────────────
             st.markdown("<div class='section-header' style='font-size:15px;'>상권 내 전체 객실 요금표</div>",
                         unsafe_allow_html=True)
             disp_cols = ['구분', '숙소명', '객실타입', '대실금액', '숙박금액']
             disp_df   = df_final[df_final['상권명'] == sel_area][disp_cols].sort_values(['구분', '숙소명'])
             
-            # 💡 [새로 추가된 부분] 콤마(,)와 '원'을 완벽하게 붙여주는 마법의 함수
             disp_df_show = disp_df.copy()
             
             def format_money(val):
                 try:
-                    # 숫자로 바꿀 수 있으면 콤마 찍고 원 붙이기 (예: 50000 -> 50,000원)
                     return f"{int(float(val)):,}원"
                 except:
-                    # 마감됐거나 빈칸이면 하이픈(-)으로 깔끔하게 표시
                     return "-"
             
             disp_df_show['대실금액'] = disp_df_show['대실금액'].apply(format_money)
             disp_df_show['숙박금액'] = disp_df_show['숙박금액'].apply(format_money)
+            
+            disp_df_show = disp_df_show.reset_index(drop=True)
 
-            # 💡 [수정된 부분] column_config를 빼고, 변환된 데이터(disp_df_show)를 출력합니다.
-            st.dataframe(disp_df_show.reset_index(drop=True), use_container_width=True, height=300)
+            # 💡 [새로 추가된 부분] 자사와 경쟁사 행 색상을 칠해주는 함수
+            def style_gubun(row):
+                if row['구분'] == '자사':
+                    # 자사는 시원한 파란색 톤
+                    return ['background-color: #e0f2fe; color: #075985'] * len(row)
+                elif row['구분'] == '경쟁사':
+                    # 경쟁사는 눈에 띄는 빨간색 톤
+                    return ['background-color: #fee2e2; color: #991b1b'] * len(row)
+                return [''] * len(row)
+
+            # 💡 [수정된 부분] 데이터프레임에 style.apply를 씌워서 대시보드에 서빙!
+            st.dataframe(disp_df_show.style.apply(style_gubun, axis=1), use_container_width=True, height=300)
 
         st.divider()
 
@@ -742,6 +751,13 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         if action_rows:
             action_df = pd.DataFrame(action_rows).sort_values('_gap_abs', ascending=False).drop(columns=['_gap_abs'])
             
+            # 💡 [새로 추가된 부분] 가격 컬럼들에 천 단위 콤마(,)만 삽입 (원 표시 제외)
+            # mode_t3 변수가 포함된 컬럼명도 대응하기 위해 리스트를 유연하게 잡습니다.
+            price_cols_l3 = [c for c in action_df.columns if '평균가' in c or '최저가' in c]
+            
+            for col in price_cols_l3:
+                action_df[col] = action_df[col].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "-")
+
             # 위험/기회 건수 카운트
             red_cnt = len(action_df[action_df['조치 권고'].str.contains("인하")])
             blue_cnt = len(action_df[action_df['조치 권고'].str.contains("인상")])
@@ -752,7 +768,7 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
                 f"</div>", 
                 unsafe_allow_html=True)
             
-            # 판다스 스타일링으로 가독성 극대화
+            # 판다스 스타일링 함수
             def style_action(row):
                 if "🔴" in row['조치 권고']:
                     return ['background-color: #fee2e2; color: #991b1b'] * len(row)
