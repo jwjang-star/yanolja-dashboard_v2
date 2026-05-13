@@ -663,8 +663,13 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
             
             def format_money(val):
                 try:
-                    return f"{int(float(val)):,}원"
+                    # 💡 추가된 로직: 숫자로 바꾼 값이 0이면 바로 하이픈 반환
+                    num = float(val)
+                    if num == 0:
+                        return "-"
+                    return f"{int(num):,}원"
                 except:
+                    # 데이터가 비어있거나 숫자가 아닐 경우
                     return "-"
             
             disp_df_show['대실금액'] = disp_df_show['대실금액'].apply(format_money)
