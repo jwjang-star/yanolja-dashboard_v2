@@ -186,19 +186,31 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         LOW_LIMIT_D, HIGH_LIMIT_D = med_d * LOW_RATIO, med_d * HIGH_RATIO
         LOW_LIMIT_S, HIGH_LIMIT_S = med_s * LOW_RATIO, med_s * HIGH_RATIO
 
-        # 💡 [핵심] 대실과 숙박을 분리해서 검사하고, 중복 데이터(겹침)를 제거합니다!
-        cond_d = (our_df_all['대실_n'] > 0) & ((our_df_all['대실_n'] < LOW_LIMIT_D) | (our_df_all['대실_n'] > HIGH_LIMIT_D))
-        issue_d = our_df_all[cond_d][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates().copy()
+        # 💡 4가지 케이스로 데이터 완벽 분리 및 중복 제거
+        df_high_d = our_df_all[our_df_all['대실_n'] > HIGH_LIMIT_D][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates().copy()
+        df_low_d = our_df_all[(our_df_all['대실_n'] > 0) & (our_df_all['대실_n'] < LOW_LIMIT_D)][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates().copy()
+        
+        df_high_s = our_df_all[our_df_all['숙박_n'] > HIGH_LIMIT_S][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates().copy()
+        df_low_s = our_df_all[(our_df_all['숙박_n'] > 0) & (our_df_all['숙박_n'] < LOW_LIMIT_S)][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates().copy()
 
-        cond_s = (our_df_all['숙박_n'] > 0) & ((our_df_all['숙박_n'] < LOW_LIMIT_S) | (our_df_all['숙박_n'] > HIGH_LIMIT_S))
-        issue_s = our_df_all[cond_s][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates().copy()
+        # 💡 가격 포맷팅 및 컬럼명 통일 함수
+        def format_df(df, col_name):
+            if not df.empty:
+                df.rename(columns={col_name: '금액'}, inplace=True)
+                df['금액'] = df['금액'].apply(lambda x: f"{int(x):,}원")
+            return df
 
-        issue_cnt = len(issue_d) + len(issue_s)
+        df_high_d = format_df(df_high_d, '대실_n')
+        df_low_d = format_df(df_low_d, '대실_n')
+        df_high_s = format_df(df_high_s, '숙박_n')
+        df_low_s = format_df(df_low_s, '숙박_n')
+
+        total_issues = len(df_high_d) + len(df_low_d) + len(df_high_s) + len(df_low_s)
 
         with st.container():
             st.markdown(f"""
             <div style='margin-bottom: 25px; font-size: 14px; color: #334155; line-height: 1.6;'>
-                현재 정상 판매 범위를 벗어난 <b>'비정상적 고단가'</b> 또는 <b>'초저단가(오입력 의심)'</b> 객실이 <b>총 {issue_cnt}건</b> 발견되었습니다.<br>
+                현재 정상 판매 범위를 벗어난 <b>'비정상적 고단가'</b> 또는 <b>'초저단가(오입력 의심)'</b> 객실이 <b>총 {total_issues}건</b> 발견되었습니다.<br>
                 <span style='color:#ef4444; font-weight:bold;'>(※ 요금에 표시된 하이픈(-)은 '판매 마감' 또는 '미운영'으로 간주하여 점검 대상에서 제외되었습니다.)</span>
                 <p style='margin-top: 8px; font-size: 13px; color: #64748b;'>
                     * 선정 기준: 현재 자사 일반 단가(중앙값) 대비 <b>{int(LOW_RATIO*100)}% 미만</b>이거나 <b>{HIGH_RATIO}배</b>를 초과하여 등록된 객실
@@ -206,42 +218,45 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
             </div>
             """, unsafe_allow_html=True)
 
-            col_i1, col_i2 = st.columns(2)
+            # 표 색상 스타일 적용 함수
+            def style_high(df): return df.style.apply(lambda x: ['background-color: #fee2e2; color: #991b1b'] * len(x), axis=1)
+            def style_low(df): return df.style.apply(lambda x: ['background-color: #fef08a; color: #854d0e; font-weight: bold'] * len(x), axis=1)
 
-            # --- [왼쪽 표] 대실 점검 ---
-            with col_i1:
-                st.markdown("**[대실] 오입력/이상 단가 지점**")
-                if not issue_d.empty:
-                    # 사유 및 가격 포맷팅
-                    issue_d['의심 사유'] = issue_d['대실_n'].apply(lambda x: "초저단가(오입력?)" if x < LOW_LIMIT_D else "초고단가")
-                    issue_d.rename(columns={'대실_n': '대실금액'}, inplace=True)
-                    issue_d['대실금액'] = issue_d['대실금액'].apply(lambda x: f"{int(x):,}원")
-
-                    def style_d(row):
-                        if "초저단가" in row['의심 사유']: return ['background-color: #fef08a; color: #854d0e; font-weight: bold'] * len(row)
-                        return ['background-color: #fee2e2; color: #991b1b'] * len(row)
-                        
-                    st.dataframe(issue_d.reset_index(drop=True).style.apply(style_d, axis=1), use_container_width=True, height=250)
+            # ── [1층] 고단가 점검 구역 ──
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"**[대실] 고단가 지점 ({len(df_high_d)}건)**")
+                if not df_high_d.empty:
+                    # hide_index=True 를 통해 맨 앞 숫자를 없앱니다.
+                    st.dataframe(style_high(df_high_d), use_container_width=True, height=200, hide_index=True)
                 else:
-                    st.success("🎉 대실 특이 사항 없음 (안전)")
-
-            # --- [오른쪽 표] 숙박 점검 ---
-            with col_i2:
-                st.markdown("**[숙박] 오입력/이상 단가 지점**")
-                if not issue_s.empty:
-                    # 사유 및 가격 포맷팅
-                    issue_s['의심 사유'] = issue_s['숙박_n'].apply(lambda x: "초저단가(오입력?)" if x < LOW_LIMIT_S else "초고단가")
-                    issue_s.rename(columns={'숙박_n': '숙박금액'}, inplace=True)
-                    issue_s['숙박금액'] = issue_s['숙박금액'].apply(lambda x: f"{int(x):,}원")
-
-                    def style_s(row):
-                        if "초저단가" in row['의심 사유']: return ['background-color: #fef08a; color: #854d0e; font-weight: bold'] * len(row)
-                        return ['background-color: #fee2e2; color: #991b1b'] * len(row)
-                        
-                    st.dataframe(issue_s.reset_index(drop=True).style.apply(style_s, axis=1), use_container_width=True, height=250)
+                    st.success("🎉 대실 고단가 특이 사항 없음")
+            
+            with col2:
+                st.markdown(f"**[숙박] 고단가 지점 ({len(df_high_s)}건)**")
+                if not df_high_s.empty:
+                    st.dataframe(style_high(df_high_s), use_container_width=True, height=200, hide_index=True)
                 else:
-                    st.success("🎉 숙박 특이 사항 없음 (안전)")
+                    st.success("🎉 숙박 고단가 특이 사항 없음")
 
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # ── [2층] 저단가(오입력) 점검 구역 ──
+            col3, col4 = st.columns(2)
+            with col3:
+                st.markdown(f"**[대실] 저단가 지점 ({len(df_low_d)}건)**")
+                if not df_low_d.empty:
+                    st.dataframe(style_low(df_low_d), use_container_width=True, height=200, hide_index=True)
+                else:
+                    st.success("🎉 대실 저단가 특이 사항 없음")
+                    
+            with col4:
+                st.markdown(f"**[숙박] 저단가 지점 ({len(df_low_s)}건)**")
+                if not df_low_s.empty:
+                    st.dataframe(style_low(df_low_s), use_container_width=True, height=200, hide_index=True)
+                else:
+                    st.success("🎉 숙박 저단가 특이 사항 없음")
+                    
 # =========================================================================
     # TAB 2: 전 지점 다각도 랭킹 분석 (전략 모니터링 보드)
     # =========================================================================
