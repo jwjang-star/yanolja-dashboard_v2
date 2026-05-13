@@ -170,41 +170,88 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
                 st.info(f"선택하신 조건에 해당하는 정상 판매 중인 {label.split()[0]} 객실이 없습니다.")
             
 
-        # 특이 사항 점검 (이상 고단가)
-        st.markdown("<div class='section-header'>🚨 핵심 점검 사항 (이상 고단가)</div>", unsafe_allow_html=True)
+        # ══════════════════════════════════════════════════════════════════
+        # 🚨 핵심 점검 사항 (가격 오입력 및 이상 단가 의심)
+        # ══════════════════════════════════════════════════════════════════
+        st.markdown("<div class='section-header'>🚨 핵심 점검 사항 (가격 오입력 / 이상 단가 의심 객실)</div>", unsafe_allow_html=True)
+        
+        # 💡 [설정값] 그날그날의 데이터 중앙값(med_d, med_s)을 기준으로 비율을 설정합니다.
+        # 기존에 선언된 med_d, med_s 가 없다면 아래 코드가 안전하게 다시 계산해 줍니다.
+        med_d = our_df_all[our_df_all['대실_n'] > 0]['대실_n'].median() if not our_df_all[our_df_all['대실_n'] > 0].empty else 30000
+        med_s = our_df_all[our_df_all['숙박_n'] > 0]['숙박_n'].median() if not our_df_all[our_df_all['숙박_n'] > 0].empty else 60000
+
+        LOW_RATIO = 0.3   # 중앙값의 30% 미만일 때 저단가(0 빼먹음 등) 의심 (예: 중앙값 5만 -> 1.5만 미만)
+        HIGH_RATIO = 2.0  # 중앙값의 2배 초과일 때 고단가 의심 (예: 중앙값 5만 -> 10만 초과)
+
+        # 동적 기준가 계산
+        LOW_LIMIT_D, HIGH_LIMIT_D = med_d * LOW_RATIO, med_d * HIGH_RATIO
+        LOW_LIMIT_S, HIGH_LIMIT_S = med_s * LOW_RATIO, med_s * HIGH_RATIO
+
+        # 조건 필터링 (0원은 마감이므로 제외)
+        cond_low_d = (our_df_all['대실_n'] > 0) & (our_df_all['대실_n'] < LOW_LIMIT_D)
+        cond_high_d = (our_df_all['대실_n'] > HIGH_LIMIT_D)
+        cond_low_s = (our_df_all['숙박_n'] > 0) & (our_df_all['숙박_n'] < LOW_LIMIT_S)
+        cond_high_s = (our_df_all['숙박_n'] > HIGH_LIMIT_S)
+
+        # 조건에 하나라도 걸리는 객실 추출
+        suspicious_df = our_df_all[cond_low_d | cond_high_d | cond_low_s | cond_high_s].copy()
+        issue_cnt = len(suspicious_df)
+
         with st.container():
             st.markdown(f"""
             <div style='margin-bottom: 25px; font-size: 14px; color: #334155; line-height: 1.6;'>
-                현재 정상 판매 범위를 벗어난 <b>'비정상적 고단가(가격 설정 오류)'</b>로 의심되는 객실이 <b>총 {issue_cnt}건</b> 발견되었습니다.<br>
-                <span style='color:#ef4444; font-weight:bold;'>(※ 대실/숙박 요금에 표시된 하이픈(-)은 '판매 마감' 또는 '미운영'으로 간주하여 점검 대상에서 제외되었습니다.)</span>
-                <p style='margin-top: 8px; font-size: 13px; color: #64748b;'>* 선정 기준: 대실 또는 숙박 요금이 전체 일반 단가(중앙값) 대비 2배 초과하여 등록된 객실</p>
+                현재 정상 판매 범위를 벗어난 <b>'비정상적 고단가'</b> 또는 <b>'초저단가(오입력 의심)'</b> 객실이 <b>총 {issue_cnt}건</b> 발견되었습니다.<br>
+                <span style='color:#ef4444; font-weight:bold;'>(※ 요금에 표시된 하이픈(-)은 '판매 마감' 또는 '미운영'으로 간주하여 점검 대상에서 제외되었습니다.)</span>
+                <p style='margin-top: 8px; font-size: 13px; color: #64748b;'>
+                    * 선정 기준: 현재 추출된 자사 객실 일반 단가(중앙값) 대비 <b>{int(LOW_RATIO*100)}% 미만</b>이거나 <b>{HIGH_RATIO}배</b>를 초과하여 등록된 객실
+                </p>
             </div>
             """, unsafe_allow_html=True)
-            
-            # --- [표 3 & 4] 고단가 지점 포맷팅 ---
-            issue_d = our_df_all[our_df_all['대실_n'] > med_d * 2.0][['현장담당자', '숙소명', '객실타입', '대실금액']].copy()
-            issue_d.columns = ['현장담당자', '지점명', '객실명', '금액']
-            # 금액 컬럼 포맷팅
-            issue_d['금액'] = issue_d['금액'].apply(lambda x: f"{int(float(str(x).replace(',',''))):,}원" if str(x).replace(',','').replace('.','').isdigit() else x)
 
-            issue_s = our_df_all[our_df_all['숙박_n'] > med_s * 2.0][['현장담당자', '숙소명', '객실타입', '숙박금액']].copy()
-            issue_s.columns = ['현장담당자', '지점명', '객실명', '금액']
-            # 금액 컬럼 포맷팅
-            issue_s['금액'] = issue_s['금액'].apply(lambda x: f"{int(float(str(x).replace(',',''))):,}원" if str(x).replace(',','').replace('.','').isdigit() else x)
+            if suspicious_df.empty:
+                st.success("🎉 현재 가격 오입력이나 이상 단가가 의심되는 객실이 없습니다. (안전 상태)")
+            else:
+                suspicious_df['의심 사유'] = ""
 
-            col_i1, col_i2 = st.columns(2)
-            with col_i1:
-                st.markdown("**[대실] 고단가 지점**")
-                if not issue_d.empty:
-                    st.dataframe(issue_d.reset_index(drop=True), use_container_width=True, height=200)
-                else:
-                    st.success("대실 고단가 특이 사항 없음")
-            with col_i2:
-                st.markdown("**[숙박] 고단가 지점**")
-                if not issue_s.empty:
-                    st.dataframe(issue_s.reset_index(drop=True), use_container_width=True, height=200)
-                else:
-                    st.success("숙박 고단가 특이 사항 없음")
+                def check_dynamic_reason(row):
+                    reasons = []
+                    # 대실 체크
+                    d_price = row['대실_n']
+                    if 0 < d_price < LOW_LIMIT_D: reasons.append("대실 초저단가(오입력?)")
+                    elif d_price > HIGH_LIMIT_D: reasons.append("대실 초고단가")
+                    
+                    # 숙박 체크
+                    s_price = row['숙박_n']
+                    if 0 < s_price < LOW_LIMIT_S: reasons.append("숙박 초저단가(오입력?)")
+                    elif s_price > HIGH_LIMIT_S: reasons.append("숙박 초고단가")
+                    return " / ".join(reasons)
+
+                suspicious_df['의심 사유'] = suspicious_df.apply(check_dynamic_reason, axis=1)
+
+                # 화면에 보여줄 컬럼
+                show_cols = ['현장담당자', '숙소명', '객실타입', '대실금액', '숙박금액', '의심 사유']
+                disp_suspicious = suspicious_df[show_cols].reset_index(drop=True)
+
+                # 금액 포맷팅 (원 표시 유지)
+                def format_price(x):
+                    try:
+                        clean_x = str(x).replace(',','').replace('원','')
+                        return f"{int(float(clean_x)):,}원" if float(clean_x) > 0 else "-"
+                    except:
+                        return "-"
+
+                disp_suspicious['대실금액'] = disp_suspicious['대실금액'].apply(format_price)
+                disp_suspicious['숙박금액'] = disp_suspicious['숙박금액'].apply(format_price)
+
+                # 위험 사유 강조 스타일링
+                def style_warning(row):
+                    if "초저단가" in row['의심 사유']:
+                        return ['background-color: #fef08a; color: #854d0e; font-weight: bold'] * len(row) # 노란색
+                    elif "초고단가" in row['의심 사유']:
+                        return ['background-color: #fee2e2; color: #991b1b'] * len(row) # 빨간색
+                    return [''] * len(row)
+
+                st.dataframe(disp_suspicious.style.apply(style_warning, axis=1), use_container_width=True)
 
 # =========================================================================
     # TAB 2: 전 지점 다각도 랭킹 분석 (전략 모니터링 보드)
