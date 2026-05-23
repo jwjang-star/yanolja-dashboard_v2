@@ -103,10 +103,10 @@ for idx, pid in enumerate(place_ids):
 
 driver.quit()
 
-# 4. 저장 (데이터 누적 및 중복 방지 - v3)
+    # 4. 저장 (데이터 가격 변동 이력 누적 - v4 준비용)
 if crawled_data:
     new_df = pd.DataFrame(crawled_data)
-    # 컬럼 순서 강제 재배치
+    # 컬럼 순서 강제 재배치 (수집일시가 이미 든든하게 포함되어 있습니다!)
     column_order = ["지점코드", "숙소명", "객실타입", "대실상태", "대실금액", "숙박상태", "숙박금액", "수집일시", "체크인"]
     new_df = new_df[column_order]
     
@@ -120,12 +120,14 @@ if crawled_data:
         old_df = pd.read_csv(file_path)
         combined_df = pd.concat([old_df, new_df])
         
-        # 💡 [운영 디테일] 중복 제거: 같은 지점, 같은 객실, 같은 체크인 날짜면 '가장 최근(last)' 수집한 데이터로 갱신!
-        combined_df = combined_df.drop_duplicates(subset=['지점코드', '객실타입', '체크인'], keep='last')
+        # 🚨 [운영 디테일 변경] subset 조건을 아예 지워버립니다!
+        # 이제 같은 객실/날짜라도 '수집일시'가 다르면 덮어쓰지 않고 이력(History)으로 고스란히 누적됩니다.
+        # (단, 완전히 100% 토씨 하나 안 틀리고 똑같은 데이터가 중복 수집된 경우만 깔끔하게 날려줍니다)
+        combined_df = combined_df.drop_duplicates()
         
         combined_df.to_csv(file_path, index=False, encoding='utf-8-sig')
-        print(f"\n🎉 [v3] 기존 파일에 새로운 날짜({checkin_date})의 데이터가 누적 저장되었습니다!")
+        print(f"\n🎉 [v4 준비] 가격 변동 이력이 삭제되지 않고({checkin_date}) 안전하게 누적 저장되었습니다!")
     else:
         # 파일이 없으면 최초 생성
         new_df.to_csv(file_path, index=False, encoding='utf-8-sig')
-        print(f"\n🎉 [v3] 새로운 파일이 생성되고 데이터가 저장되었습니다!")
+        print(f"\n🎉 [v4 준비] 새로운 파일이 생성되고 데이터가 저장되었습니다!")
