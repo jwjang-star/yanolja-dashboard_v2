@@ -4,6 +4,15 @@ import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 
+# ══════════════════════════════════════════════════════════════════
+# 👑 브라우저 탭 이름 & 웹페이지 기본 세팅 (무조건 제일 위에 위치!)
+# ══════════════════════════════════════════════════════════════════
+st.set_page_config(
+    page_title="HSO 국내 OTA 대시보드 [야놀자]",  # 💡 브라우저 탭에 표시될 이름 (원하시는 대로 수정하세요)
+    page_icon="",                   # 💡 탭 이름 옆에 붙을 아이콘 (이모지 가능)
+    layout="wide"                     # 화면을 좌우로 넓게 쓰는 옵션 (이미 적용되어 있다면 생략 가능)
+)
+
 # ── 폰트 및 리포트 테마 설정 ──────────────────────────────────
 pio.templates["report"] = go.layout.Template(
     layout=go.Layout(
@@ -102,24 +111,17 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
             # 💡 [마법의 한 줄] 병합된 전체 데이터에서 '선택한 날짜'의 데이터만 남깁니다!
             df_final = df_final[df_final['체크인'] == selected_date].copy()
             
-            # 💡 [추가] 데이터 추출 시간 표시 (24시간제 'HH시' 포맷)
+            # 💡 [수정] 데이터 추출 '일자'와 '시간' 전체를 명확하게 표시합니다.
             if '수집일시' in df_final.columns and not df_final.empty:
-                # 가장 최근에 수집된 시간 텍스트를 가져옵니다 (예: '2026-05-23 14:30')
+                # 가장 최근에 수집된 정확한 일시 (예: '2026-05-23 15:10')
                 latest_datetime = str(df_final['수집일시'].max())
-                
-                try:
-                    # 'YYYY-MM-DD HH:MM' 형태에서 시간(HH)만 빼냅니다
-                    extracted_hour = latest_datetime.split(' ')[1].split(':')[0]
-                    st.sidebar.info(f"⏱️ 업데이트 기준: **{extracted_hour}시**")
-                except:
-                    pass # 혹시 수집일시 형식이 다를 경우 에러 방지용
+                st.sidebar.info(f"⏱️ 추출 일시: **{latest_datetime}**")
 
             st.sidebar.success(f"현재 [ {selected_date} ] 일자 데이터를 분석 중입니다.")
         else:
             st.sidebar.warning("조회 가능한 날짜 데이터가 없습니다.")
     else:
         st.sidebar.error("데이터에 '체크인' 컬럼이 존재하지 않습니다. 크롤러를 v3로 업데이트했는지 확인해주세요.")
-
     # ------------------------------------------------------------------
     # 💡 [요약 데이터 계산] 딥씽크 보완 로직 적용
     # ------------------------------------------------------------------
@@ -166,7 +168,7 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
 
     tab1, tab2, tab3 = st.tabs(["지점별 가격 현황", "전 지점 다각도 랭킹", "상권별 상세 비교"])
 
-    # =========================================================================
+# =========================================================================
     # TAB 1: 지점별 가격 현황
     # =========================================================================
     with tab1:
@@ -180,29 +182,64 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         </div>
         """, unsafe_allow_html=True)
 
-        # 분포도
-        st.markdown("<div class='section-header'>전체 가격 분포도 (마감 객실 제외)</div>", unsafe_allow_html=True)
-        # 💡 아래 줄을 변경했습니다! (.dropna() 추가)
-        target_mgr = st.multiselect("특정 담당자 지점만 보기 (미선택 시 전체)", sorted(our_df_all['현장담당자'].dropna().unique()))
-        plot_df = our_df_all if not target_mgr else our_df_all[our_df_all['현장담당자'].isin(target_mgr)]
+        # 💡 [핵심] 차트를 그리기 전에 장기숙박 데이터를 먼저 분리하고 중앙값을 계산합니다!
+        long_stay_keywords = ['장기', '연박', '주간', '월간', '살기', '패키지']
+        is_long_stay = our_df_all['객실타입'].str.contains('|'.join(long_stay_keywords), na=False) | (our_df_all['숙박_n'] >= 250000)
+        
+        normal_df = our_df_all[~is_long_stay].copy() # 일반 숙박
+        long_df = our_df_all[is_long_stay].copy()    # 장기 숙박
 
-        # 💡 for문에 '상태 컬럼명'을 추가해서 대실과 숙박을 구분합니다.
-        for label, col, status_col, med_val in [("대실 가격 분포", "대실_n", "대실상태", med_d), ("숙박 가격 분포", "숙박_n", "숙박상태", med_s)]:
-            
-            # 💡 핵심 수정: '상태' 글자가 "마감"이 아닌 데이터만 뽑아냅니다.
-            df_scat = plot_df[plot_df[status_col] != '마감']
-            
-            # 만약 마감을 다 뺐더니 데이터가 하나도 없다면 에러 방지
-            if not df_scat.empty:
-                # hover_data(마우스 올렸을 때 뜨는 정보)에 '상태'도 보이게 추가해 두었습니다.
-                hover_cols = ['객실타입', status_col, '대실금액' if col=='대실_n' else '숙박금액']
-                
-                fig = px.scatter(df_scat, x='숙소명', y=col, color='사업본부', hover_data=hover_cols, height=400)
-                fig.add_hline(y=med_val, line_dash="dash", line_color="#f43f5e", annotation_text=f"중앙값 ({med_val:,.0f}원)", annotation_position="bottom right")
-                fig.update_layout(title=label, xaxis_title=None, yaxis_title="요금(원)", xaxis_showticklabels=False)
-                st.plotly_chart(fig, use_container_width=True)
+        # 분리된 데이터를 바탕으로 정확한 중앙값 사전 계산
+        med_d = normal_df[normal_df['대실_n'] > 0]['대실_n'].median() if not normal_df[normal_df['대실_n'] > 0].empty else 30000
+        med_s = normal_df[normal_df['숙박_n'] > 0]['숙박_n'].median() if not normal_df[normal_df['숙박_n'] > 0].empty else 60000
+        med_l = long_df[long_df['숙박_n'] > 0]['숙박_n'].median() if not long_df[long_df['숙박_n'] > 0].empty else 500000
+
+
+        # ══════════════════════════════════════════════════════════════════
+        # 📊 3분할 가격 분포도 (마감 객실 제외)
+        # ══════════════════════════════════════════════════════════════════
+        st.markdown("<div class='section-header'>전체 가격 분포도 (마감 객실 제외)</div>", unsafe_allow_html=True)
+        target_mgr = st.multiselect("특정 담당자 지점만 보기 (미선택 시 전체)", sorted(our_df_all['현장담당자'].dropna().unique()))
+        
+        # 필터 적용된 데이터 (일반용 / 장기용)
+        plot_normal_df = normal_df if not target_mgr else normal_df[normal_df['현장담당자'].isin(target_mgr)]
+        plot_long_df = long_df if not target_mgr else long_df[long_df['현장담당자'].isin(target_mgr)]
+
+        # 💡 화면을 3개로 나눕니다.
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.markdown("##### 🕒 대실 분포 (일반)")
+            df_d = plot_normal_df[plot_normal_df['대실상태'] != '마감']
+            if not df_d.empty:
+                fig_d = px.scatter(df_d, x='숙소명', y='대실_n', color='사업본부', hover_data=['객실타입', '대실상태', '대실금액'], height=400)
+                fig_d.add_hline(y=med_d, line_dash="dash", line_color="#f43f5e", annotation_text=f"중앙값 ({med_d:,.0f}원)")
+                fig_d.update_layout(xaxis_title=None, yaxis_title="요금(원)", xaxis_showticklabels=False, margin=dict(l=0, r=0, t=10, b=0))
+                st.plotly_chart(fig_d, use_container_width=True)
             else:
-                st.info(f"선택하신 조건에 해당하는 정상 판매 중인 {label.split()[0]} 객실이 없습니다.")
+                st.info("판매 중인 대실 객실이 없습니다.")
+
+        with col2:
+            st.markdown("##### 🏨 숙박 분포 (일반)")
+            df_s = plot_normal_df[plot_normal_df['숙박상태'] != '마감']
+            if not df_s.empty:
+                fig_s = px.scatter(df_s, x='숙소명', y='숙박_n', color='사업본부', hover_data=['객실타입', '숙박상태', '숙박금액'], height=400)
+                fig_s.add_hline(y=med_s, line_dash="dash", line_color="#f43f5e", annotation_text=f"중앙값 ({med_s:,.0f}원)")
+                fig_s.update_layout(xaxis_title=None, yaxis_title="요금(원)", xaxis_showticklabels=False, margin=dict(l=0, r=0, t=10, b=0))
+                st.plotly_chart(fig_s, use_container_width=True)
+            else:
+                st.info("판매 중인 숙박 객실이 없습니다.")
+
+        with col3:
+            st.markdown("##### 📅 장기숙박 분포")
+            df_l = plot_long_df[plot_long_df['숙박상태'] != '마감']
+            if not df_l.empty:
+                fig_l = px.scatter(df_l, x='숙소명', y='숙박_n', color='사업본부', hover_data=['객실타입', '숙박상태', '숙박금액'], height=400)
+                fig_l.add_hline(y=med_l, line_dash="dash", line_color="#8b5cf6", annotation_text=f"장기 중앙값 ({med_l:,.0f}원)")
+                fig_l.update_layout(xaxis_title=None, yaxis_title="요금(원)", xaxis_showticklabels=False, margin=dict(l=0, r=0, t=10, b=0))
+                st.plotly_chart(fig_l, use_container_width=True)
+            else:
+                st.info("판매 중인 장기숙박 객실이 없습니다.")
             
 
         # ══════════════════════════════════════════════════════════════════
@@ -210,9 +247,9 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         # ══════════════════════════════════════════════════════════════════
         st.markdown("<div class='section-header'>🚨 핵심 점검 사항 (가격 오입력 / 이상 단가 의심 객실)</div>", unsafe_allow_html=True)
         
-        # 💡 동적 중앙값 계산
-        med_d = our_df_all[our_df_all['대실_n'] > 0]['대실_n'].median() if not our_df_all[our_df_all['대실_n'] > 0].empty else 30000
-        med_s = our_df_all[our_df_all['숙박_n'] > 0]['숙박_n'].median() if not our_df_all[our_df_all['숙박_n'] > 0].empty else 60000
+        # 💡 동적 중앙값 계산 (🚨 장기숙박이 제외된 normal_df 사용!)
+        med_d = normal_df[normal_df['대실_n'] > 0]['대실_n'].median() if not normal_df[normal_df['대실_n'] > 0].empty else 30000
+        med_s = normal_df[normal_df['숙박_n'] > 0]['숙박_n'].median() if not normal_df[normal_df['숙박_n'] > 0].empty else 60000
 
         # [설정값]
         LOW_RATIO = 0.3   # 중앙값의 30% 미만 (초저단가/오입력)
@@ -221,14 +258,12 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         LOW_LIMIT_D, HIGH_LIMIT_D = med_d * LOW_RATIO, med_d * HIGH_RATIO
         LOW_LIMIT_S, HIGH_LIMIT_S = med_s * LOW_RATIO, med_s * HIGH_RATIO
 
-        # 💡 4가지 케이스로 데이터 완벽 분리 및 중복 제거
-        # 💡 4가지 케이스로 데이터 완벽 분리 및 중복 제거 (+ '판매중'인 객실만 필터링!)
-        df_high_d = our_df_all[(our_df_all['대실상태'] == '판매중') & (our_df_all['대실_n'] > HIGH_LIMIT_D)][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates().copy()
-        df_low_d = our_df_all[(our_df_all['대실상태'] == '판매중') & (our_df_all['대실_n'] > 0) & (our_df_all['대실_n'] < LOW_LIMIT_D)][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates().copy()
+        # 💡 4가지 케이스로 데이터 완벽 분리 및 중복 제거 (🚨 normal_df 기준으로만 필터링!)
+        df_high_d = normal_df[(normal_df['대실상태'] == '판매중') & (normal_df['대실_n'] > HIGH_LIMIT_D)][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates().copy()
+        df_low_d = normal_df[(normal_df['대실상태'] == '판매중') & (normal_df['대실_n'] > 0) & (normal_df['대실_n'] < LOW_LIMIT_D)][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates().copy()
         
-        df_high_s = our_df_all[(our_df_all['숙박상태'] == '판매중') & (our_df_all['숙박_n'] > HIGH_LIMIT_S)][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates().copy()
-        df_low_s = our_df_all[(our_df_all['숙박상태'] == '판매중') & (our_df_all['숙박_n'] > 0) & (our_df_all['숙박_n'] < LOW_LIMIT_S)][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates().copy()
-
+        df_high_s = normal_df[(normal_df['숙박상태'] == '판매중') & (normal_df['숙박_n'] > HIGH_LIMIT_S)][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates().copy()
+        df_low_s = normal_df[(normal_df['숙박상태'] == '판매중') & (normal_df['숙박_n'] > 0) & (normal_df['숙박_n'] < LOW_LIMIT_S)][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates().copy()
         # 💡 가격 포맷팅 및 컬럼명 통일 함수
         def format_df(df, col_name):
             if not df.empty:
@@ -293,7 +328,7 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
                 else:
                     st.success("🎉 숙박 저단가 특이 사항 없음")
                     
-# =========================================================================
+    # =========================================================================
     # TAB 2: 전 지점 다각도 랭킹 분석 (전략 모니터링 보드)
     # =========================================================================
     with tab2:
