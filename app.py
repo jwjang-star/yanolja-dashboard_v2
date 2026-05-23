@@ -196,17 +196,16 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
 
 
         # ══════════════════════════════════════════════════════════════════
-        # 📊 3단 세로 가격 분포도 (마감 객실 제외)
+        # 📊 2단 세로 가격 분포도 (마감 객실 및 장기숙박 제외)
         # ══════════════════════════════════════════════════════════════════
-        st.markdown("<div class='section-header'>전체 가격 분포도 (마감 객실 제외)</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-header'>전체 가격 분포도 (마감 및 장기숙박 객실 제외)</div>", unsafe_allow_html=True)
         target_mgr = st.multiselect("특정 담당자 지점만 보기 (미선택 시 전체)", sorted(our_df_all['현장담당자'].dropna().unique()))
         
-        # 필터 적용된 데이터 (일반용 / 장기용)
+        # 필터 적용된 데이터 (장기숙박이 완벽히 유기된 순수 일반 데이터만 사용!)
         plot_normal_df = normal_df if not target_mgr else normal_df[normal_df['현장담당자'].isin(target_mgr)]
-        plot_long_df = long_df if not target_mgr else long_df[long_df['현장담당자'].isin(target_mgr)]
 
         # ── [1층] 대실 분포 ──
-        st.markdown("##### 🕒 대실 분포 (일반)")
+        st.markdown("##### 🕒 대실 금액 ")
         df_d = plot_normal_df[plot_normal_df['대실상태'] != '마감']
         if not df_d.empty:
             fig_d = px.scatter(df_d, x='숙소명', y='대실_n', color='사업본부', hover_data=['객실타입', '대실상태', '대실금액'], height=400)
@@ -219,7 +218,7 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         st.markdown("<br>", unsafe_allow_html=True) # 살짝 띄어쓰기
 
         # ── [2층] 숙박 분포 ──
-        st.markdown("##### 🏨 숙박 분포 (일반)")
+        st.markdown("##### 🏨 숙박 금액")
         df_s = plot_normal_df[plot_normal_df['숙박상태'] != '마감']
         if not df_s.empty:
             fig_s = px.scatter(df_s, x='숙소명', y='숙박_n', color='사업본부', hover_data=['객실타입', '숙박상태', '숙박금액'], height=400)
@@ -228,21 +227,8 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
             st.plotly_chart(fig_s, use_container_width=True)
         else:
             st.info("판매 중인 숙박 객실이 없습니다.")
-
-        st.markdown("<br>", unsafe_allow_html=True) # 살짝 띄어쓰기
-
-        # ── [3층] 장기숙박 분포 ──
-        st.markdown("##### 📅 장기숙박 분포")
-        df_l = plot_long_df[plot_long_df['숙박상태'] != '마감']
-        if not df_l.empty:
-            fig_l = px.scatter(df_l, x='숙소명', y='숙박_n', color='사업본부', hover_data=['객실타입', '숙박상태', '숙박금액'], height=400)
-            fig_l.add_hline(y=med_l, line_dash="dash", line_color="#8b5cf6", annotation_text=f"장기 중앙값 ({med_l:,.0f}원)")
-            fig_l.update_layout(xaxis_title=None, yaxis_title="요금(원)", xaxis_showticklabels=False, margin=dict(l=0, r=0, t=10, b=0))
-            st.plotly_chart(fig_l, use_container_width=True)
-        else:
-            st.info("판매 중인 장기숙박 객실이 없습니다.")
             
-        st.markdown("<br>", unsafe_allow_html=True) # 살짝 띄어쓰기 
+        st.markdown("<br>", unsafe_allow_html=True) # 살짝 띄어쓰기
 
         # ══════════════════════════════════════════════════════════════════
         # 🚨 핵심 점검 사항 (가격 오입력 및 이상 단가 의심)
