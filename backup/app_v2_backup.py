@@ -102,18 +102,6 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
             # 💡 [마법의 한 줄] 병합된 전체 데이터에서 '선택한 날짜'의 데이터만 남깁니다!
             df_final = df_final[df_final['체크인'] == selected_date].copy()
             
-            # 💡 [추가] 데이터 추출 시간 표시 (24시간제 'HH시' 포맷)
-            if '수집일시' in df_final.columns and not df_final.empty:
-                # 가장 최근에 수집된 시간 텍스트를 가져옵니다 (예: '2026-05-23 14:30')
-                latest_datetime = str(df_final['수집일시'].max())
-                
-                try:
-                    # 'YYYY-MM-DD HH:MM' 형태에서 시간(HH)만 빼냅니다
-                    extracted_hour = latest_datetime.split(' ')[1].split(':')[0]
-                    st.sidebar.info(f"⏱️ 업데이트 기준: **{extracted_hour}시**")
-                except:
-                    pass # 혹시 수집일시 형식이 다를 경우 에러 방지용
-
             st.sidebar.success(f"현재 [ {selected_date} ] 일자 데이터를 분석 중입니다.")
         else:
             st.sidebar.warning("조회 가능한 날짜 데이터가 없습니다.")
