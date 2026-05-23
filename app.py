@@ -150,44 +150,10 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
 
     issue_cnt = issue_d_cnt + issue_s_cnt
 
-        # ══════════════════════════════════════════════════════════════════
-        # 📊 통합 운영 개요 (Overview) - Custom UI 
-        # ══════════════════════════════════════════════════════════════════
-    st.markdown("### 📊 통합 운영 개요 (Overview)")
-        
-        # 💡 [동적 UI] 점검 필요 건수가 0건이면 초록색(안전), 1건 이상이면 빨간색(경고)으로 바뀝니다!
-    issue_bg_color = "#fef2f2" if issue_cnt > 0 else "#f0fdf4"
-    issue_border_color = "#fca5a5" if issue_cnt > 0 else "#86efac"
-    issue_text_color = "#991b1b" if issue_cnt > 0 else "#166534"
-    issue_icon = "🚨" if issue_cnt > 0 else "✅"
-
-        # HTML/CSS를 활용한 모던 카드 디자인
-    overview_html = f"""
-        <div style="display: flex; gap: 15px; margin-bottom: 30px; text-align: center;">
-            
-            <div style="flex: 1; padding: 20px 10px; border-radius: 12px; background-color: #f8fafc; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-                <p style="margin: 0; font-size: 14px; color: #64748b; font-weight: 500;">🏢 총 모니터링 객실</p>
-                <h2 style="margin: 10px 0 0 0; font-size: 28px; color: #0f172a;">{total_cnt:,}개</h2>
-            </div>
-            
-            <div style="flex: 1; padding: 20px 10px; border-radius: 12px; background-color: #eff6ff; border: 1px solid #bfdbfe; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-                <p style="margin: 0; font-size: 14px; color: #3b82f6; font-weight: 500;">🟢 판매 중 객실</p>
-                <h2 style="margin: 10px 0 0 0; font-size: 28px; color: #1e3a8a;">{on_sale_cnt:,}개</h2>
-            </div>
-
-            <div style="flex: 1; padding: 20px 10px; border-radius: 12px; background-color: #fffbeb; border: 1px solid #fde68a; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-                <p style="margin: 0; font-size: 14px; color: #d97706; font-weight: 500;">🔒 마감/미판매</p>
-                <h2 style="margin: 10px 0 0 0; font-size: 28px; color: #92400e;">{closed_cnt:,}개</h2>
-            </div>
-
-            <div style="flex: 1; padding: 20px 10px; border-radius: 12px; background-color: {issue_bg_color}; border: 1px solid {issue_border_color}; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-                <p style="margin: 0; font-size: 14px; color: {issue_text_color}; font-weight: 700;">{issue_icon} 점검 필요 (이상 단가)</p>
-                <h2 style="margin: 10px 0 0 0; font-size: 28px; color: {issue_text_color}; font-weight: 800;">{issue_cnt:,}개</h2>
-            </div>
-
-        </div>
-        """
-    st.markdown(overview_html, unsafe_allow_html=True)
+    # 상단 요약 (Overview)
+    st.markdown("<div class='overview-title'>📊 통합 운영 개요 (Overview)</div>", unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("총 모니터링 객실", f"{total_rooms:,}개")
     
     # 0 나누기 에러 방지 방어 코드 추가
     percent_closed = (closed_cnt / total_rooms * 100) if total_rooms > 0 else 0
@@ -200,7 +166,7 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
 
     tab1, tab2, tab3 = st.tabs(["지점별 가격 현황", "전 지점 다각도 랭킹", "상권별 상세 비교"])
 
-    # =========================================================================
+# =========================================================================
     # TAB 1: 지점별 가격 현황
     # =========================================================================
     with tab1:
