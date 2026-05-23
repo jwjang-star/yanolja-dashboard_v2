@@ -183,7 +183,7 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         """, unsafe_allow_html=True)
 
         # 💡 [핵심] 차트를 그리기 전에 장기숙박 데이터를 먼저 분리하고 중앙값을 계산합니다!
-        long_stay_keywords = ['장기', '연박', '주간', '월간', '살기', '패키지']
+        long_stay_keywords = ['장기', '월간', '살기']
         is_long_stay = our_df_all['객실타입'].str.contains('|'.join(long_stay_keywords), na=False) | (our_df_all['숙박_n'] >= 250000)
         
         normal_df = our_df_all[~is_long_stay].copy() # 일반 숙박
