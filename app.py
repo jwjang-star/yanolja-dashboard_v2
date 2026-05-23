@@ -85,7 +85,28 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
     
     df_final = pd.merge(df_merged, df_m[['지점코드_s', '현장담당자', '사업본부', '분류']], 
                         left_on='매칭코드', right_on='지점코드_s', how='left', suffixes=('', '_m'))
-
+    
+    # ══════════════════════════════════════════════════════════════════
+    # 📅 [v3] 사이드바: 체크인 날짜 필터링 시스템 (마스터 스위치)
+    # ══════════════════════════════════════════════════════════════════
+    st.sidebar.markdown("### 📅 데이터 조회 설정")
+    
+    if '체크인' in df_final.columns:
+        # 누적된 데이터에서 존재하는 날짜들만 뽑아냄 (최신 날짜가 위로 오게 정렬)
+        available_dates = sorted(df_final['체크인'].dropna().unique(), reverse=True)
+        
+        if available_dates:
+            # 사이드바에 날짜 선택 창 생성
+            selected_date = st.sidebar.selectbox("📌 체크인 날짜 선택", available_dates)
+            
+            # 💡 [마법의 한 줄] 병합된 전체 데이터에서 '선택한 날짜'의 데이터만 남깁니다!
+            df_final = df_final[df_final['체크인'] == selected_date].copy()
+            
+            st.sidebar.success(f"현재 [ {selected_date} ] 일자 데이터를 분석 중입니다.")
+        else:
+            st.sidebar.warning("조회 가능한 날짜 데이터가 없습니다.")
+    else:
+        st.sidebar.error("데이터에 '체크인' 컬럼이 존재하지 않습니다. 크롤러를 v3로 업데이트했는지 확인해주세요.")
 
     # ------------------------------------------------------------------
     # 💡 [요약 데이터 계산] 딥씽크 보완 로직 적용
