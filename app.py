@@ -93,27 +93,29 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
     our_df_all = df_final[df_final['구분'] == '자사'].copy()
     total_rooms = len(our_df_all)
 
-    # 1. 중앙값 계산 (0원인 데이터는 기준값 계산에서 제외해야 정확함)
-    valid_d = our_df_all[our_df_all['대실_n'] > 0]['대실_n']
-    valid_s = our_df_all[our_df_all['숙박_n'] > 0]['숙박_n']
-    med_d = valid_d.median() if not valid_d.empty else 0
-    med_s = valid_s.median() if not valid_s.empty else 0
+    # 1. 중앙값 계산 (아래쪽 상세표와 기준을 완벽히 통일)
+    med_d = our_df_all[our_df_all['대실_n'] > 0]['대실_n'].median() if not our_df_all[our_df_all['대실_n'] > 0].empty else 30000
+    med_s = our_df_all[our_df_all['숙박_n'] > 0]['숙박_n'].median() if not our_df_all[our_df_all['숙박_n'] > 0].empty else 60000
 
     # 2. 마감/미판매 집계 (텍스트 '마감'이거나 금액이 0원이면 마감으로 인정)
-    # 현재 & (대실/숙박 둘 다 마감)로 설정. 대실이나 숙박 중 하나만 마감이어도 
-    # 세고 싶으시다면 아래의 & 를 | 로 바꾸세요!
     closed_df = our_df_all[
         ((our_df_all['대실상태'] == '마감') | (our_df_all['대실_n'] == 0)) & 
         ((our_df_all['숙박상태'] == '마감') | (our_df_all['숙박_n'] == 0))
     ]
     closed_cnt = len(closed_df)
 
-    # 3. 이상 고단가 집계
-    if med_d > 0 and med_s > 0:
-        issue_df = our_df_all[(our_df_all['대실_n'] > med_d * 2.0) | (our_df_all['숙박_n'] > med_s * 2.0)]
-    else:
-        issue_df = pd.DataFrame()
-    issue_cnt = len(issue_df)
+    # 3. 점검 필요(이상 단가) 집계 - 판매중인 객실만 대상으로 정확하게 카운트!
+    LOW_RATIO = 0.3
+    HIGH_RATIO = 2.0
+
+    LOW_LIMIT_D, HIGH_LIMIT_D = med_d * LOW_RATIO, med_d * HIGH_RATIO
+    LOW_LIMIT_S, HIGH_LIMIT_S = med_s * LOW_RATIO, med_s * HIGH_RATIO
+
+    # 판매중인 객실 중 초고단가/초저단가 조건에 걸리는 건수 (중복 제거 포함)
+    issue_d_cnt = len(our_df_all[(our_df_all['대실상태'] == '판매중') & (our_df_all['대실_n'] > 0) & ((our_df_all['대실_n'] < LOW_LIMIT_D) | (our_df_all['대실_n'] > HIGH_LIMIT_D))][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates())
+    issue_s_cnt = len(our_df_all[(our_df_all['숙박상태'] == '판매중') & (our_df_all['숙박_n'] > 0) & ((our_df_all['숙박_n'] < LOW_LIMIT_S) | (our_df_all['숙박_n'] > HIGH_LIMIT_S))][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates())
+
+    issue_cnt = issue_d_cnt + issue_s_cnt
 
     # 상단 요약 (Overview)
     st.markdown("<div class='overview-title'>📊 통합 운영 개요 (Overview)</div>", unsafe_allow_html=True)
