@@ -187,11 +187,12 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         LOW_LIMIT_S, HIGH_LIMIT_S = med_s * LOW_RATIO, med_s * HIGH_RATIO
 
         # 💡 4가지 케이스로 데이터 완벽 분리 및 중복 제거
-        df_high_d = our_df_all[our_df_all['대실_n'] > HIGH_LIMIT_D][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates().copy()
-        df_low_d = our_df_all[(our_df_all['대실_n'] > 0) & (our_df_all['대실_n'] < LOW_LIMIT_D)][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates().copy()
+        # 💡 4가지 케이스로 데이터 완벽 분리 및 중복 제거 (+ '판매중'인 객실만 필터링!)
+        df_high_d = our_df_all[(our_df_all['대실상태'] == '판매중') & (our_df_all['대실_n'] > HIGH_LIMIT_D)][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates().copy()
+        df_low_d = our_df_all[(our_df_all['대실상태'] == '판매중') & (our_df_all['대실_n'] > 0) & (our_df_all['대실_n'] < LOW_LIMIT_D)][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates().copy()
         
-        df_high_s = our_df_all[our_df_all['숙박_n'] > HIGH_LIMIT_S][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates().copy()
-        df_low_s = our_df_all[(our_df_all['숙박_n'] > 0) & (our_df_all['숙박_n'] < LOW_LIMIT_S)][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates().copy()
+        df_high_s = our_df_all[(our_df_all['숙박상태'] == '판매중') & (our_df_all['숙박_n'] > HIGH_LIMIT_S)][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates().copy()
+        df_low_s = our_df_all[(our_df_all['숙박상태'] == '판매중') & (our_df_all['숙박_n'] > 0) & (our_df_all['숙박_n'] < LOW_LIMIT_S)][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates().copy()
 
         # 💡 가격 포맷팅 및 컬럼명 통일 함수
         def format_df(df, col_name):
