@@ -343,13 +343,15 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
             </p>
         </div>
         """, unsafe_allow_html=True)
-	
+    
         # 1. 가격 구분 선택 (상단 배치)
         mode = st.radio("분석 요금 구분", ["대실", "숙박"], horizontal=True)
         val_c = '대실_n' if mode == "대실" else '숙박_n'
         
-        # 데이터 기초 필터링 (해당 요금제 판매 중인 객실만)
-        active_rooms = our_df_all[our_df_all[val_c] > 0]
+        # 💡 [버그 수정 1] our_df_all 대신 장기숙박이 제거된 normal_df 사용!
+        # 💡 [버그 수정 2] 금액이 0원인 것뿐만 아니라, 상태가 '마감'인 것도 확실하게 걸러냅니다!
+        status_col = '대실상태' if mode == "대실" else '숙박상태'
+        active_rooms = normal_df[(normal_df[status_col] != '마감') & (normal_df[val_c] > 0)].copy()
 
         # 🌟 2. 핵심 지표 4대 박스 (ADR 포함)
         if not active_rooms.empty:
@@ -378,7 +380,7 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         
         st.divider()
 
-       # 3. 상세 랭킹 분석
+        # 3. 상세 랭킹 분석
         st.markdown("<div class='section-header'>지점별 가격 서열 랭킹</div>", unsafe_allow_html=True)
         
         # 라디오 버튼 (상단 배치)
@@ -393,45 +395,55 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
             st.markdown("<div style='font-size: 13px; color: #64748b; margin-top: -10px; margin-bottom: 20px;'>💡 <b>최고가 순위:</b> 프리미엄 객실(파티룸, 스위트 등)의 가격을 비교하여 고단가 유도 현황을 파악합니다.</div>", unsafe_allow_html=True)
 
         # 랭킹 데이터 계산
-        if agg_type == "최저가":
-            rank_df = active_rooms.groupby('숙소명')[val_c].min().reset_index()
-        elif agg_type == "중앙값":
-            rank_df = active_rooms.groupby('숙소명')[val_c].median().reset_index()
-        else:
-            rank_df = active_rooms.groupby('숙소명')[val_c].max().reset_index()
+        if not active_rooms.empty:
+            if agg_type == "최저가":
+                rank_df = active_rooms.groupby('숙소명')[val_c].min().reset_index()
+            elif agg_type == "중앙값":
+                rank_df = active_rooms.groupby('숙소명')[val_c].median().reset_index()
+            else:
+                rank_df = active_rooms.groupby('숙소명')[val_c].max().reset_index()
 
-        rank_df = rank_df.sort_values(val_c, ascending=True)
-        
-        # 그래프 생성 (가로 막대형)
-        fig_r = px.bar(rank_df, 
-                          y='숙소명', 
-                          x=val_c, 
-                          orientation='h',
-                          text_auto=',.0f',
-                          color=val_c,
-                          color_continuous_scale='Blues',
-                          height=max(600, len(rank_df)*25)) 
-        
-        # 기준선 추가 (선택한 지표의 전체 중앙값)
-        ref_line = rank_df[val_c].median()
-        fig_r.add_vline(x=ref_line, line_dash="dash", line_color="#ef4444", 
-                        annotation_text=f"전체 기준선 ({ref_line:,.0f})", annotation_position="top right")
-        
-        fig_r.update_layout(yaxis_title=None, xaxis_title="금액(원)", coloraxis_showscale=False)
-        st.plotly_chart(fig_r, use_container_width=True)
+            rank_df = rank_df.sort_values(val_c, ascending=True)
+            
+            # 그래프 생성 (가로 막대형)
+            fig_r = px.bar(rank_df, 
+                              y='숙소명', 
+                              x=val_c, 
+                              orientation='h',
+                              text_auto=',.0f',
+                              color=val_c,
+                              color_continuous_scale='Blues',
+                              height=max(400, len(rank_df)*25)) 
+            
+            # 기준선 추가 (선택한 지표의 전체 중앙값)
+            ref_line = rank_df[val_c].median()
+            fig_r.add_vline(x=ref_line, line_dash="dash", line_color="#ef4444", 
+                            annotation_text=f"전체 기준선 ({ref_line:,.0f})", annotation_position="top right")
+            
+            fig_r.update_layout(yaxis_title=None, xaxis_title="금액(원)", coloraxis_showscale=False)
+            st.plotly_chart(fig_r, use_container_width=True)
+        else:
+            st.info("조건에 맞는 판매 중인 객실 데이터가 없습니다.")
 
         st.divider()
 
         # 지점별 심층 분석
         st.markdown("<div class='section-header'>지점별 상세 분석 (객실 단위)</div>", unsafe_allow_html=True)
-        sel_hotel = st.selectbox("심층 분석할 지점을 선택하세요", sorted(our_df_all['숙소명'].unique()))
+        
+        # 💡 [버그 수정 3] 셀렉트박스 목록도 장기숙박이 배제된 normal_df 기준으로 표출
+        sel_hotel = st.selectbox("심층 분석할 지점을 선택하세요", sorted(normal_df['숙소명'].unique()))
         
         if sel_hotel:
-            target_df = our_df_all[our_df_all['숙소명'] == sel_hotel].copy()
+            # 💡 [버그 수정 4] 선택된 지점의 데이터도 normal_df 에서 추출
+            target_df = normal_df[normal_df['숙소명'] == sel_hotel].copy()
             
             st.markdown("**객실타입별 요금 비교 차트**")
             if not target_df.empty:
                 melted = target_df.melt(id_vars=['객실타입'], value_vars=['대실_n', '숙박_n'], var_name='유형', value_name='가격')
+                
+                # 💡 [버그 방어막 추가] 마감되어서 가격이 0원인 데이터는 그래프에서 아예 그리지 않고 삭제합니다!
+                melted = melted[melted['가격'] > 0] 
+                
                 melted['유형'] = melted['유형'].replace({'대실_n': '대실', '숙박_n': '숙박'})
                 
                 fig_bar = px.bar(melted, y='객실타입', x='가격', color='유형', barmode='group', orientation='h',
@@ -446,14 +458,14 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
                 st.markdown("**[대실] 요금 상세**")
                 # 보여주기용 데이터 복사 및 포맷팅
                 disp_t1 = target_df[['객실타입', '대실상태', '대실금액']].copy()
-                disp_t1['대실금액'] = disp_t1['대실금액'].apply(lambda x: f"{int(float(str(x).replace(',',''))):,}원" if str(x).replace(',','').replace('.','').isdigit() else x)
+                disp_t1['대실금액'] = disp_t1['대실금액'].apply(lambda x: f"{int(float(str(x).replace(',','').replace('원',''))):,}원" if str(x).replace(',','').replace('.','').replace('원','').isdigit() else x)
                 st.dataframe(disp_t1.reset_index(drop=True), use_container_width=True)
                 
             with col_t2:
                 st.markdown("**[숙박] 요금 상세**")
                 # 보여주기용 데이터 복사 및 포맷팅
                 disp_t2 = target_df[['객실타입', '숙박상태', '숙박금액']].copy()
-                disp_t2['숙박금액'] = disp_t2['숙박금액'].apply(lambda x: f"{int(float(str(x).replace(',',''))):,}원" if str(x).replace(',','').replace('.','').isdigit() else x)
+                disp_t2['숙박금액'] = disp_t2['숙박금액'].apply(lambda x: f"{int(float(str(x).replace(',','').replace('원',''))):,}원" if str(x).replace(',','').replace('.','').replace('원','').isdigit() else x)
                 st.dataframe(disp_t2.reset_index(drop=True), use_container_width=True)
 
     # =========================================================================
