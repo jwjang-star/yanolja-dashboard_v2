@@ -173,7 +173,7 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
     on_sale_cnt = total_rooms - closed_cnt
 
     overview_html = f"""
-    <div style="display: flex; gap: 15px; margin-bottom: 30px; text-align: center;">
+<div style="display: flex; gap: 15px; margin-bottom: 30px; text-align: center;">
         
         <div style="flex: 1; padding: 20px 10px; border-radius: 12px; background-color: #f8fafc; border: 1px solid #e2e8f0;">
             <p style="margin: 0; font-size: 14px; color: #64748b; font-weight: 500;">🏢 총 모니터링 객실</p>
