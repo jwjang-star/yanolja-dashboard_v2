@@ -157,50 +157,21 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
 
     issue_cnt = issue_d_cnt + issue_s_cnt
 
-# ══════════════════════════════════════════════════════════════════
-    # 📊 [v3 전용] 통합 운영 개요 (Overview) - 세련된 HTML 모던 카드형 UI 적용
-    # ══════════════════════════════════════════════════════════════════
-    st.markdown("### 📊 통합 운영 개요 (Overview)")
+    # 상단 요약 (Overview)
+    st.markdown("<div class='overview-title'>📊 통합 운영 개요 (Overview)</div>", unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("총 모니터링 객실", f"{total_rooms:,}개")
     
-    # 동적 UI 컬러 설정 (0건이면 편안한 그린 ✅, 1건 이상이면 긴박한 레드 🚨)
-    issue_bg_color = "#fef2f2" if issue_cnt > 0 else "#f0fdf4"
-    issue_border_color = "#fca5a5" if issue_cnt > 0 else "#86efac"
-    issue_text_color = "#991b1b" if issue_cnt > 0 else "#166534"
-    issue_icon = "🚨" if issue_cnt > 0 else "✅"
-    
-# 0 나누기 에러 방지 및 퍼센트 계산
+    # 0 나누기 에러 방지 방어 코드 추가
     percent_closed = (closed_cnt / total_rooms * 100) if total_rooms > 0 else 0
-    on_sale_cnt = total_rooms - closed_cnt
-
-    # 💡 [해결] HTML 코드 앞의 들여쓰기 공간을 없애서 왼쪽 벽에 바짝 붙였습니다!
-    overview_html = f"""
-<div style="display: flex; gap: 15px; margin-bottom: 30px; text-align: center;">
+    c2.metric("마감/미판매 (전체 하이픈)", f"{closed_cnt:,}개", f"전체의 {percent_closed:.1f}%")
     
-    <div style="flex: 1; padding: 20px 10px; border-radius: 12px; background-color: #f8fafc; border: 1px solid #e2e8f0;">
-        <p style="margin: 0; font-size: 14px; color: #64748b; font-weight: 500;">🏢 총 모니터링 객실</p>
-        <h2 style="margin: 10px 0 0 0; font-size: 28px; color: #0f172a; font-weight: 700;">{total_rooms:,}개</h2>
-    </div>
+    c3.metric("판매 중 객실", f"{total_rooms - closed_cnt:,}개")
+    c4.metric("점검 필요 (이상 고단가)", f"{issue_cnt:,}개", delta="확인 요망", delta_color="inverse")
     
-    <div style="flex: 1; padding: 20px 10px; border-radius: 12px; background-color: #eff6ff; border: 1px solid #bfdbfe;">
-        <p style="margin: 0; font-size: 14px; color: #3b82f6; font-weight: 500;">🟢 판매 중 객실</p>
-        <h2 style="margin: 10px 0 0 0; font-size: 28px; color: #1e3a8a; font-weight: 700;">{on_sale_cnt:,}개</h2>
-    </div>
+    st.divider()
 
-    <div style="flex: 1; padding: 20px 10px; border-radius: 12px; background-color: #fffbeb; border: 1px solid #fde68a;">
-        <p style="margin: 0; font-size: 14px; color: #d97706; font-weight: 500;">🔒 마감/미판매</p>
-        <h2 style="margin: 10px 0 0 0; font-size: 28px; color: #92400e; font-weight: 700;">{closed_cnt:,}개</h2>
-        <p style="margin: 5px 0 0 0; font-size: 12px; color: #b45309; font-weight: bold;">전체의 {percent_closed:.1f}%</p>
-    </div>
-
-    <div style="flex: 1; padding: 20px 10px; border-radius: 12px; background-color: {issue_bg_color}; border: 1px solid {issue_border_color};">
-        <p style="margin: 0; font-size: 14px; color: {issue_text_color}; font-weight: 700;">{issue_icon} 점검 필요 (이상 단가)</p>
-        <h2 style="margin: 10px 0 0 0; font-size: 28px; color: {issue_text_color}; font-weight: 800;">{issue_cnt:,}개</h2>
-        <p style="margin: 5px 0 0 0; font-size: 12px; color: {issue_text_color}; font-weight: bold;">확인 요망</p>
-    </div>
-
-</div>
-"""
-    st.markdown(overview_html, unsafe_allow_html=True)   
+    tab1, tab2, tab3 = st.tabs(["지점별 가격 현황", "전 지점 다각도 랭킹", "상권별 상세 비교"])
     st.divider()
 
     tab1, tab2, tab3 = st.tabs(["지점별 가격 현황", "전 지점 다각도 랭킹", "상권별 상세 비교"])
