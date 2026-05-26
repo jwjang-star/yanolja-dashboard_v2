@@ -120,33 +120,40 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
             st.sidebar.warning("조회 가능한 날짜 데이터가 없습니다.")
     else:
         st.sidebar.error("데이터에 '체크인' 컬럼이 존재하지 않습니다. 크롤러를 v3로 업데이트했는지 확인해주세요.")
+        
     # ------------------------------------------------------------------
-    # 💡 [요약 데이터 계산] 딥씽크 보완 로직 적용
+    # 💡 [요약 데이터 계산] 장기숙박 격리 및 데이터 정합성 일치 로직
     # ------------------------------------------------------------------
     our_df_all = df_final[df_final['구분'] == '자사'].copy()
     total_rooms = len(our_df_all)
 
-    # 1. 중앙값 계산 (아래쪽 상세표와 기준을 완벽히 통일)
-    med_d = our_df_all[our_df_all['대실_n'] > 0]['대실_n'].median() if not our_df_all[our_df_all['대실_n'] > 0].empty else 30000
-    med_s = our_df_all[our_df_all['숙박_n'] > 0]['숙박_n'].median() if not our_df_all[our_df_all['숙박_n'] > 0].empty else 60000
+    # 🔥 [핵심 추가] 하단 상세표/차트와 기준을 완벽하게 맞추기 위해 장기숙박을 먼저 분리합니다!
+    long_stay_keywords = ['장기', '연박', '주간', '월간', '살기', '패키지']
+    is_long_stay = our_df_all['객실타입'].str.contains('|'.join(long_stay_keywords), na=False) | (our_df_all['숙박_n'] >= 250000)
+    
+    normal_df = our_df_all[~is_long_stay].copy() # 🟢 순수 일반 숙박 데이터
 
-    # 2. 마감/미판매 집계 (텍스트 '마감'이거나 금액이 0원이면 마감으로 인정)
+    # 1. 중앙값 계산 (★이제 오염되지 않은 normal_df 기준으로 정확하게 계산합니다)
+    med_d = normal_df[normal_df['대실_n'] > 0]['대실_n'].median() if not normal_df[normal_df['대실_n'] > 0].empty else 30000
+    med_s = normal_df[normal_df['숙박_n'] > 0]['숙박_n'].median() if not normal_df[normal_df['숙박_n'] > 0].empty else 60000
+
+    # 2. 마감/미판매 집계 (전체 모니터링 대상 기준)
     closed_df = our_df_all[
         ((our_df_all['대실상태'] == '마감') | (our_df_all['대실_n'] == 0)) & 
         ((our_df_all['숙박상태'] == '마감') | (our_df_all['숙박_n'] == 0))
     ]
     closed_cnt = len(closed_df)
 
-    # 3. 점검 필요(이상 단가) 집계 - 판매중인 객실만 대상으로 정확하게 카운트!
+    # 3. 점검 필요(이상 단가) 집계 - ★하단 상세표와 100% 동일하게 normal_df 기준으로 카운트!
     LOW_RATIO = 0.3
     HIGH_RATIO = 2.0
 
     LOW_LIMIT_D, HIGH_LIMIT_D = med_d * LOW_RATIO, med_d * HIGH_RATIO
     LOW_LIMIT_S, HIGH_LIMIT_S = med_s * LOW_RATIO, med_s * HIGH_RATIO
 
-    # 판매중인 객실 중 초고단가/초저단가 조건에 걸리는 건수 (중복 제거 포함)
-    issue_d_cnt = len(our_df_all[(our_df_all['대실상태'] == '판매중') & (our_df_all['대실_n'] > 0) & ((our_df_all['대실_n'] < LOW_LIMIT_D) | (our_df_all['대실_n'] > HIGH_LIMIT_D))][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates())
-    issue_s_cnt = len(our_df_all[(our_df_all['숙박상태'] == '판매중') & (our_df_all['숙박_n'] > 0) & ((our_df_all['숙박_n'] < LOW_LIMIT_S) | (our_df_all['숙박_n'] > HIGH_LIMIT_S))][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates())
+    # 판매중인 일반 객실 중 초고단가/초저단가 조건에 걸리는 건수 (하단 표 데이터와 100% 일치)
+    issue_d_cnt = len(normal_df[(normal_df['대실상태'] == '판매중') & (normal_df['대실_n'] > 0) & ((normal_df['대실_n'] < LOW_LIMIT_D) | (normal_df['대실_n'] > HIGH_LIMIT_D))][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates())
+    issue_s_cnt = len(normal_df[(normal_df['숙박상태'] == '판매중') & (normal_df['숙박_n'] > 0) & ((normal_df['숙박_n'] < LOW_LIMIT_S) | (normal_df['숙박_n'] > HIGH_LIMIT_S))][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates())
 
     issue_cnt = issue_d_cnt + issue_s_cnt
 
