@@ -176,6 +176,8 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         c4.metric("🚨 점검 필요 (이상 단가)", f"{issue_cnt:,}개", delta="확인 요망", delta_color="inverse")
     else:
         c4.metric("✅ 점검 완료", f"{issue_cnt:,}개", delta="특이사항 없음", delta_color="normal")
+    
+    st.divider()
 
     # ══════════════════════════════════════════════════════════════════
     # 📖 메인 화면 토글형 매뉴얼 (클릭 이동 목차 + FAQ 가독성 최적화)
@@ -293,8 +295,7 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         """)
         
         st.markdown(manual_md, unsafe_allow_html=True)
-    st.divider()
-    
+
     tab1, tab2, tab3 = st.tabs(["지점별 가격 현황", "전 지점 다각도 랭킹", "상권별 상세 비교"])
 
     # =========================================================================
