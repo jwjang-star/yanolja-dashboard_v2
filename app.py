@@ -128,7 +128,7 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
     total_rooms = len(our_df_all)
 
     # 🔥 [핵심 추가] 하단 상세표/차트와 기준을 완벽하게 맞추기 위해 장기숙박을 먼저 분리합니다!
-    long_stay_keywords = ['장기', '연박', '주간', '월간', '살기', '패키지']
+    long_stay_keywords = ['장기', '월간', '살기']
     is_long_stay = our_df_all['객실타입'].str.contains('|'.join(long_stay_keywords), na=False) | (our_df_all['숙박_n'] >= 250000)
     
     normal_df = our_df_all[~is_long_stay].copy() # 🟢 순수 일반 숙박 데이터
