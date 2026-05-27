@@ -3,14 +3,16 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
+import os
+import traceback
 
 # ══════════════════════════════════════════════════════════════════
 # 👑 브라우저 탭 이름 & 웹페이지 기본 세팅 (무조건 제일 위에 위치!)
 # ══════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="HSO 국내 OTA 대시보드 [야놀자]",  # 💡 브라우저 탭에 표시될 이름 (원하시는 대로 수정하세요)
-    page_icon="",                   # 💡 탭 이름 옆에 붙을 아이콘 (이모지 가능)
-    layout="wide"                     # 화면을 좌우로 넓게 쓰는 옵션 (이미 적용되어 있다면 생략 가능)
+    page_title="HSO 국내 OTA 대시보드 [야놀자]",
+    page_icon="",
+    layout="wide"
 )
 
 # ── 폰트 및 리포트 테마 설정 ──────────────────────────────────
@@ -36,8 +38,30 @@ html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif !important;
 </style>
 """, unsafe_allow_html=True)
 
-# ── 데이터 처리 함수 ──────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+# ⚙️ 전역 설정값 (한 곳에서 관리)
+# ══════════════════════════════════════════════════════════════════
+CONFIG = {
+    "LOW_RATIO": 0.3,           # 중앙값 대비 이상 저단가 기준 (30% 미만)
+    "HIGH_RATIO": 2.0,          # 중앙값 대비 이상 고단가 기준 (2배 초과)
+    "THRESHOLD_RED": 0.10,      # 상권 경쟁 기준 고단가 경고 (10% 초과)
+    "THRESHOLD_BLUE": -0.10,    # 상권 경쟁 기준 저단가 기회 (-10% 미만)
+    "LONG_STAY_KEYWORDS": ['장기', '월간', '살기'],
+    "LONG_STAY_PRICE": 250000,  # 장기숙박 단가 기준선 (원)
+    "DEFAULT_MED_D": 30000,     # 대실 중앙값 fallback (데이터 없을 때)
+    "DEFAULT_MED_S": 60000,     # 숙박 중앙값 fallback (데이터 없을 때)
+}
+
+FILE_P = "data/price_data_new.csv"
+FILE_M = "data/manager_map.csv"
+FILE_C = "data/comp_match.csv"
+
+# ══════════════════════════════════════════════════════════════════
+# 🔧 유틸리티 함수 (전역 공통)
+# ══════════════════════════════════════════════════════════════════
+
 def read_data(file):
+    """CSV 파일을 다양한 인코딩으로 시도하여 DataFrame 반환. 실패 시 None 반환."""
     encodings = ['utf-8-sig', 'cp949', 'euc-kr']
     for enc in encodings:
         try:
@@ -45,610 +69,736 @@ def read_data(file):
             df = pd.read_csv(file, encoding=enc, skiprows=1 if "대실현황" in file.name else 0)
             df.columns = [c.lstrip('\ufeff').strip() for c in df.columns]
             return df
-        except: continue
+        except Exception:
+            continue
     return None
 
+
 def to_num(x):
-    if pd.isna(x): return 0
-    s = str(x).replace(',', '').replace('원', '').strip()
-    if s == '-' or s == '': return 0 
-    try: return int(float(s))
-    except: return 0
-
-# ── 데이터 로드 ─────────────────────────────────────────────
-import os
-
-# ── 백단(서버) 데이터 자동 로드 ─────────────────────────────────────────────
-# data 폴더 안의 파일 경로 지정
-FILE_P = "data/price_data_new.csv" # 크롤러가 뱉어내는 새 파일 이름
-FILE_M = "data/manager_map.csv"
-FILE_C = "data/comp_match.csv"
-
-# 세 파일이 모두 존재하는지 체크
-if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
-    # 파일을 읽기 모드(rb)로 열어서 기존 read_data 함수에 전달
-    with open(FILE_P, 'rb') as f1, open(FILE_M, 'rb') as f2, open(FILE_C, 'rb') as f3:
-        df_p = read_data(f1)
-        df_m = read_data(f2)
-        df_c = read_data(f3)
+    """문자열/숫자 혼합 금액을 정수로 변환. 변환 불가 시 0 반환."""
+    if pd.isna(x):
+        return 0
+    s = str(x).replace(',', '').replace('원', '').replace('₩', '').strip()
+    if s in ('-', '', 'nan', 'None'):
+        return 0
+    try:
+        return int(float(s))
+    except (ValueError, OverflowError):
+        return 0
 
 
-# 💡 [전처리] 텍스트 공백 제거 및 숫자 변환
-    df_p['대실상태'] = df_p['대실상태'].astype(str).str.strip()
-    df_p['숙박상태'] = df_p['숙박상태'].astype(str).str.strip()
+def format_money(val):
+    """금액을 천 단위 콤마 포맷(원 표시 없음)으로 반환. 0 또는 변환 불가 시 하이픈 반환."""
+    try:
+        num = float(str(val).replace(',', '').replace('원', '').strip())
+        if num == 0:
+            return "-"
+        return f"{int(num):,}원"
+    except (ValueError, TypeError):
+        return "-"
+
+
+def safe_median(series, default=0):
+    """안전한 중앙값 계산. 유효값이 없으면 default 반환."""
+    filtered = series[series > 0].dropna()
+    if filtered.empty:
+        return default
+    return filtered.median()
+
+
+def safe_mean(series):
+    """안전한 평균 계산. 유효값이 없으면 0 반환."""
+    filtered = series[series > 0].dropna()
+    if filtered.empty:
+        return 0
+    return filtered.mean()
+
+
+def check_required_columns(df, required_cols, df_name):
+    """DataFrame에 필수 컬럼이 존재하는지 검증. 누락 컬럼 목록 반환."""
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        st.error(f"❌ [{df_name}] 파일에 필수 컬럼이 없습니다: {missing}\n실제 컬럼: {list(df.columns)}")
+    return missing
+
+
+# ══════════════════════════════════════════════════════════════════
+# 📂 데이터 로드 및 유효성 검증
+# ══════════════════════════════════════════════════════════════════
+
+def load_and_validate_files():
+    """
+    3개 CSV 파일을 로드하고 유효성을 검증합니다.
+    성공 시 (df_p, df_m, df_c) 튜플 반환.
+    실패 시 None 반환 및 st.error 출력.
+    """
+    # 1단계: 파일 존재 여부 확인
+    missing_files = [f for f in [FILE_P, FILE_M, FILE_C] if not os.path.exists(f)]
+    if missing_files:
+        st.error(
+            f"🚨 데이터 연동 에러: 아래 파일이 서버의 'data' 폴더에 존재하지 않습니다.\n\n"
+            + "\n".join(f"  - `{f}`" for f in missing_files)
+        )
+        st.info("💡 크롤러가 정상 실행되었는지, 파일명이 정확한지 확인해 주세요.")
+        return None
+
+    # 2단계: 파일 읽기
+    try:
+        with open(FILE_P, 'rb') as f1, open(FILE_M, 'rb') as f2, open(FILE_C, 'rb') as f3:
+            df_p = read_data(f1)
+            df_m = read_data(f2)
+            df_c = read_data(f3)
+    except OSError as e:
+        st.error(f"🚨 파일 읽기 오류: {e}")
+        return None
+
+    # 3단계: 파일 파싱 실패 확인
+    failed = []
+    if df_p is None: failed.append(FILE_P)
+    if df_m is None: failed.append(FILE_M)
+    if df_c is None: failed.append(FILE_C)
+    if failed:
+        st.error(
+            f"🚨 아래 파일을 읽을 수 없습니다. 인코딩(UTF-8, CP949, EUC-KR) 또는 파일 형식을 확인해 주세요.\n\n"
+            + "\n".join(f"  - `{f}`" for f in failed)
+        )
+        return None
+
+    # 4단계: 빈 파일 확인
+    empty = []
+    if df_p.empty: empty.append(FILE_P)
+    if df_m.empty: empty.append(FILE_M)
+    if df_c.empty: empty.append(FILE_C)
+    if empty:
+        st.error(f"🚨 아래 파일이 비어 있습니다 (행이 0개):\n\n" + "\n".join(f"  - `{f}`" for f in empty))
+        return None
+
+    # 5단계: 필수 컬럼 존재 확인
+    errors = []
+    errors += check_required_columns(df_p, ['지점코드', '객실타입', '대실상태', '숙박상태', '대실금액', '숙박금액'], "price_data")
+    errors += check_required_columns(df_m, ['야놀자모텔', '현장담당자', '사업본부', '분류'], "manager_map")
+    errors += check_required_columns(df_c, ['지점코드', '구분', '비교대상자사코드', '상권명'], "comp_match")
+    if errors:
+        return None
+
+    return df_p, df_m, df_c
+
+
+# ══════════════════════════════════════════════════════════════════
+# 🔗 데이터 전처리 및 병합
+# ══════════════════════════════════════════════════════════════════
+
+def preprocess_and_merge(df_p, df_m, df_c):
+    """전처리 및 병합. 실패 시 None 반환."""
+    try:
+        df_p = df_p.copy()
+        df_m = df_m.copy()
+        df_c = df_c.copy()
+
+        # 텍스트 공백 제거 및 숫자 변환
+        df_p['대실상태'] = df_p['대실상태'].astype(str).str.strip()
+        df_p['숙박상태'] = df_p['숙박상태'].astype(str).str.strip()
+
+        df_p['지점코드_s'] = df_p['지점코드'].astype(str).str.split('.').str[0]
+        df_p['대실_n'] = df_p['대실금액'].apply(to_num)
+        df_p['숙박_n'] = df_p['숙박금액'].apply(to_num)
+
+        df_m['지점코드_s'] = df_m['야놀자모텔'].astype(str).str.split('.').str[0]
+        df_c['지점코드_s'] = df_c['지점코드'].astype(str).str.split('.').str[0]
+        df_c['비교자사_s'] = df_c['비교대상자사코드'].astype(str).str.split('.').str[0]
+
+        # 병합
+        df_merged = pd.merge(
+            df_p,
+            df_c[['지점코드_s', '구분', '비교자사_s', '상권명']],
+            on='지점코드_s', how='left'
+        )
+        df_merged['구분'] = df_merged['구분'].fillna('자사')
+        df_merged['매칭코드'] = df_merged.apply(
+            lambda x: x['비교자사_s'] if x['구분'] == '경쟁사' else x['지점코드_s'], axis=1
+        )
+
+        df_final = pd.merge(
+            df_merged,
+            df_m[['지점코드_s', '현장담당자', '사업본부', '분류']],
+            left_on='매칭코드', right_on='지점코드_s', how='left', suffixes=('', '_m')
+        )
+
+        # 병합 결과 최소 행 수 확인
+        if df_final.empty:
+            st.error("🚨 데이터 병합 결과가 비어 있습니다. 지점코드 매핑을 확인해 주세요.")
+            return None
+
+        return df_final
+
+    except Exception as e:
+        st.error(f"🚨 데이터 전처리 중 예상치 못한 오류가 발생했습니다:\n`{e}`")
+        with st.expander("🔍 상세 오류 로그 (개발자용)"):
+            st.code(traceback.format_exc())
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════
+# 🚀 메인 앱 실행
+# ══════════════════════════════════════════════════════════════════
+
+# ── 데이터 로드 ──
+result = load_and_validate_files()
+
+if result is None:
+    st.stop()  # 에러 발생 시 이하 코드 실행 중단
+
+df_p, df_m, df_c = result
+
+# ── 전처리 및 병합 ──
+df_final = preprocess_and_merge(df_p, df_m, df_c)
+
+if df_final is None:
+    st.stop()
+
+# ══════════════════════════════════════════════════════════════════
+# 📅 사이드바: 체크인 날짜 필터링 시스템
+# ══════════════════════════════════════════════════════════════════
+st.sidebar.markdown("### 📅 데이터 조회 설정")
+
+if '체크인' not in df_final.columns:
+    st.sidebar.error("데이터에 '체크인' 컬럼이 존재하지 않습니다. 크롤러를 v3로 업데이트했는지 확인해주세요.")
+    st.stop()
+
+available_dates = sorted(df_final['체크인'].dropna().unique(), reverse=True)
+
+if not available_dates:
+    st.sidebar.warning("조회 가능한 날짜 데이터가 없습니다.")
+    st.stop()
+
+selected_date = st.sidebar.selectbox("📌 체크인 날짜 선택", available_dates)
+df_final = df_final[df_final['체크인'] == selected_date].copy()
+
+if df_final.empty:
+    st.warning(f"선택한 날짜 [{selected_date}]에 해당하는 데이터가 없습니다.")
+    st.stop()
+
+if '수집일시' in df_final.columns:
+    latest_datetime = str(df_final['수집일시'].max())
+    st.sidebar.info(f"⏱️ 추출 일시: **{latest_datetime}**")
+
+st.sidebar.success(f"현재 [ {selected_date} ] 일자 데이터를 분석 중입니다.")
+
+# ══════════════════════════════════════════════════════════════════
+# 📊 요약 데이터 계산 (장기숙박 격리)
+# ══════════════════════════════════════════════════════════════════
+our_df_all = df_final[df_final['구분'] == '자사'].copy()
+total_rooms = len(our_df_all)
+
+if total_rooms == 0:
+    st.warning("자사 데이터가 없습니다. comp_match.csv의 '구분' 컬럼을 확인해 주세요.")
+    st.stop()
+
+# 장기숙박 분리
+is_long_stay = (
+    our_df_all['객실타입'].str.contains('|'.join(CONFIG["LONG_STAY_KEYWORDS"]), na=False) |
+    (our_df_all['숙박_n'] >= CONFIG["LONG_STAY_PRICE"])
+)
+normal_df = our_df_all[~is_long_stay].copy()
+
+# 중앙값 계산
+med_d = safe_median(normal_df['대실_n'], CONFIG["DEFAULT_MED_D"])
+med_s = safe_median(normal_df['숙박_n'], CONFIG["DEFAULT_MED_S"])
+
+# 마감/미판매 집계
+closed_df = our_df_all[
+    ((our_df_all['대실상태'] == '마감') | (our_df_all['대실_n'] == 0)) &
+    ((our_df_all['숙박상태'] == '마감') | (our_df_all['숙박_n'] == 0))
+]
+closed_cnt = len(closed_df)
+
+# 이상 단가 집계
+LOW_LIMIT_D  = med_d * CONFIG["LOW_RATIO"]
+HIGH_LIMIT_D = med_d * CONFIG["HIGH_RATIO"]
+LOW_LIMIT_S  = med_s * CONFIG["LOW_RATIO"]
+HIGH_LIMIT_S = med_s * CONFIG["HIGH_RATIO"]
+
+issue_d_cnt = len(
+    normal_df[
+        (normal_df['대실상태'] == '판매중') & (normal_df['대실_n'] > 0) &
+        ((normal_df['대실_n'] < LOW_LIMIT_D) | (normal_df['대실_n'] > HIGH_LIMIT_D))
+    ][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates()
+)
+issue_s_cnt = len(
+    normal_df[
+        (normal_df['숙박상태'] == '판매중') & (normal_df['숙박_n'] > 0) &
+        ((normal_df['숙박_n'] < LOW_LIMIT_S) | (normal_df['숙박_n'] > HIGH_LIMIT_S))
+    ][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates()
+)
+issue_cnt = issue_d_cnt + issue_s_cnt
+
+# ── 상단 요약 (Overview) ──
+st.markdown("<div class='overview-title'>📊 통합 운영 개요 (Overview)</div>", unsafe_allow_html=True)
+
+percent_closed = (closed_cnt / total_rooms * 100) if total_rooms > 0 else 0
+on_sale_cnt = total_rooms - closed_cnt
+
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("총 모니터링 객실", f"{total_rooms:,}개")
+c2.metric("마감/미판매 (전체 하이픈)", f"{closed_cnt:,}개", f"전체의 {percent_closed:.1f}%", delta_color="off")
+c3.metric("판매 중 객실", f"{on_sale_cnt:,}개")
+
+if issue_cnt > 0:
+    c4.metric("🚨 점검 필요 (이상 단가)", f"{issue_cnt:,}개", delta="확인 요망", delta_color="inverse")
+else:
+    c4.metric("✅ 점검 완료", f"{issue_cnt:,}개", delta="특이사항 없음", delta_color="normal")
+
+st.divider()
+
+# ══════════════════════════════════════════════════════════════════
+# 📖 메인 화면 토글형 매뉴얼
+# ══════════════════════════════════════════════════════════════════
+import textwrap
+
+with st.expander("💡 실무자를 위한 대시보드 200% 활용 및 분석 프로세스 가이드 (클릭하여 펼치기)", expanded=False):
+    manual_md = textwrap.dedent("""
+    ### 📊 HSO OTA 가격 모니터링 대시보드
+    #### 활용 매뉴얼 및 데이터 분석 프로세스
+
+    > **문서 버전:** v1.0 | **작성 기준일:** 2026-05-26  
+    > **대상 독자:** 본사 운영/가격 관리자, 지점 현장 담당자
+
+    ---
+
+    #### 📑 목차 (클릭 시 해당 항목으로 이동합니다)
+    1. [대시보드 개요 및 핵심 지표 해설](#sec1)
+    2. [TAB별 데이터 해석 및 액션 플랜](#sec2)
+    3. [주간·월간 전략 분석 프로세스](#sec3)
+    4. [자주 묻는 질문 (FAQ)](#sec4)
+
+    ---
+
+    <a id="sec1"></a>
+    #### 1. 대시보드 개요 및 핵심 지표 해설
+
+    ##### 1-1. 상단 요약 카드 (Overview) 읽는 법
+    대시보드를 열면 가장 먼저 4개의 카드가 보입니다. 이 카드만 봐도 **오늘의 전체 건강 상태**를 30초 안에 파악할 수 있습니다.
+
+    | 카드 명칭 | 의미 | 정상 범위 기준 |
+    |-----------|------|----------------|
+    | **총 모니터링 객실** | 현재 OTA에 노출 중인 전체 객실(상품) 수 | 전일 대비 급격한 증감 없음 |
+    | **마감/미판매 (전체 하이픈)** | 판매 불가 처리된 객실 비율 | 당일 기준 11% 이하 권장 |
+    | **판매 중 객실** | 실시간 판매 가능한 객실 수 | 총 객실의 85% 이상 유지 |
+    | **⚠️ 점검 필요 (이상 단가)** | 중앙값 대비 30% 미만 또는 2배 초과 객실 수 | **0건이 목표. 1건이라도 있으면 즉시 확인** |
+
+    > 💡 **초보자 팁:** "점검 필요" 카드에 빨간색 숫자가 표시되면, 그날 업무의 **1순위**는 해당 건 처리입니다. 다른 탭을 보기 전에 이것부터 해결하세요.
+
+    ---
+
+    <a id="sec2"></a>
+    #### 2. TAB별 데이터 해석 및 액션 플랜
+
+    ##### 📍 TAB 1 — 지점별 가격 현황
+
+    ##### 🔴 이상 고단가 발생 시 (중앙값 2배 초과)
+    **비즈니스 리스크:**
+    * OTA 플랫폼 알고리즘에 의해 **검색 노출 순위 하락** → 매출 직접 감소
+    * 고객이 가격 비교 후 경쟁사로 이탈 → **이탈률(Bounce Rate) 상승**
+    * 비정상 가격이 장시간 방치되면 플랫폼으로부터 **페널티 또는 계약 이슈** 발생 가능
+
+    **원인 분류 및 해결 방법:**
+    | 원인 | 확인 방법 | 조치 |
+    |------|-----------|------|
+    | 오입력 (세금 중복 적용, 단위 오류 등) | 현장 담당자에게 PMS 원본 확인 요청 | 즉시 수정 후 OTA 동기화 |
+    | 시스템 연동 오류 (채널매니저 버그) | 채널매니저 관리자 확인 | 기술 지원팀 티켓 발행 |
+    | 의도적 프리미엄 설정 | 담당자 확인 | 전략 타당성 검토 후 유지 또는 수정 |
+    | 특정 날짜 이벤트 설정 실수 | 달력 기준 날짜별 요금 확인 | 해당 날짜 요금 일괄 초기화 |
     
-    df_p['지점코드_s'] = df_p['지점코드'].astype(str).str.split('.').str[0]
-    df_p['대실_n'] = df_p['대실금액'].apply(to_num)
-    df_p['숙박_n'] = df_p['숙박금액'].apply(to_num)
+    > ⏱️ **대응 목표 시간:** 이상 고단가 발견 후 **2시간 이내** 원인 파악 및 수정 완료
 
-    df_m['지점코드_s'] = df_m['야놀자모텔'].astype(str).str.split('.').str[0]
-    df_c['지점코드_s'] = df_c['지점코드'].astype(str).str.split('.').str[0]
-    df_c['비교자사_s'] = df_c['비교대상자사코드'].astype(str).str.split('.').str[0]
+    ##### 🔵 이상 저단가 발생 시 (중앙값 30% 미만)
+    **비즈니스 리스크:**
+    * 실제 가치보다 낮은 가격으로 예약이 몰릴 경우 **수익 손실 직결**
+    * 타 OTA 채널과의 가격 형평성 위반으로 **최저가 보장 정책 위반** 가능
+    * 브랜드 가치 훼손 — 지속 노출 시 고객이 "저가 브랜드"로 인식
 
-    # [병합]
-    df_merged = pd.merge(df_p, df_c[['지점코드_s', '구분', '비교자사_s', '상권명']], on='지점코드_s', how='left')
-    df_merged['구분'] = df_merged['구분'].fillna('자사')
-    df_merged['매칭코드'] = df_merged.apply(lambda x: x['비교자사_s'] if x['구분'] == '경쟁사' else x['지점코드_s'], axis=1)
-    
-    df_final = pd.merge(df_merged, df_m[['지점코드_s', '현장담당자', '사업본부', '분류']], 
-                        left_on='매칭코드', right_on='지점코드_s', how='left', suffixes=('', '_m'))
-    
-    # ══════════════════════════════════════════════════════════════════
-    # 📅 [v3] 사이드바: 체크인 날짜 필터링 시스템 (마스터 스위치)
-    # ══════════════════════════════════════════════════════════════════
-    st.sidebar.markdown("### 📅 데이터 조회 설정")
-    
-    if '체크인' in df_final.columns:
-        # 누적된 데이터에서 존재하는 날짜들만 뽑아냄 (최신 날짜가 위로 오게 정렬)
-        available_dates = sorted(df_final['체크인'].dropna().unique(), reverse=True)
-        
-        if available_dates:
-            # 사이드바에 날짜 선택 창 생성
-            selected_date = st.sidebar.selectbox("📌 체크인 날짜 선택", available_dates)
-            
-            # 💡 [마법의 한 줄] 병합된 전체 데이터에서 '선택한 날짜'의 데이터만 남깁니다!
-            df_final = df_final[df_final['체크인'] == selected_date].copy()
-            
-            # 💡 [수정] 데이터 추출 '일자'와 '시간' 전체를 명확하게 표시합니다.
-            if '수집일시' in df_final.columns and not df_final.empty:
-                # 가장 최근에 수집된 정확한 일시 (예: '2026-05-23 15:10')
-                latest_datetime = str(df_final['수집일시'].max())
-                st.sidebar.info(f"⏱️ 추출 일시: **{latest_datetime}**")
+    **원인 분류 및 해결 방법:**
+    | 원인 | 확인 방법 | 조치 |
+    |------|-----------|------|
+    | 숫자 오입력 (1만원대 → 1천원대) | PMS 확인 | 즉시 수정, 이미 예약된 건 개별 검토 |
+    | 특가/프로모션 설정 실수 | 프로모션 기간·대상 확인 | 프로모션 즉시 종료 또는 범위 조정 |
+    | 장기숙박 필터 미작동 | 대시보드 필터 조건 재확인 | 개발팀에 필터 로직 검토 요청 |
 
-            st.sidebar.success(f"현재 [ {selected_date} ] 일자 데이터를 분석 중입니다.")
-        else:
-            st.sidebar.warning("조회 가능한 날짜 데이터가 없습니다.")
+    ---
+
+    <a id="sec3"></a>
+    #### 3. 주간·월간 전략 분석 프로세스
+
+    ##### 📅 주간 분석 (매주 월요일 오전)
+    * [ ] 지난 주 이상 단가 발생 건수 집계 및 전주 대비 증감
+    * [ ] 지점별 중앙값 변화 추이 (상승/하락 지점 식별)
+    * [ ] 상권별 경쟁 포지션 변화 확인
+    * [ ] 마감/미판매 비율이 지속적으로 높은 지점 → 원인 분석
+    * [ ] 이번 주 특이 이벤트(연휴, 지역 축제 등) 고려한 단가 조정 필요 여부
+
+    ##### 📅 월간 분석 (매월 첫째 주)
+    * [ ] 월간 이상 단가 발생 패턴 분석 (특정 지점·상품·요일 집중 여부)
+    * [ ] 전체 지점 중앙값 분포 변화 — 브랜드 전체 포지셔닝 방향 확인
+    * [ ] 최저가·중앙값·최고가 랭킹 TOP 5 / BOTTOM 5 지점 분석
+    * [ ] 경쟁사 가격 변동 트렌드 분석 — 시장 평균 단가 상승/하락 여부
+
+    ---
+
+    <a id="sec4"></a>
+    #### 4. 자주 묻는 질문 (FAQ)
+
+    **Q. "점검 필요" 건수가 0인데도 가격이 이상한 것 같아요.** <br>
+    A. 대시보드는 '중앙값 대비 30% 미만 또는 2배 초과'를 이상 단가로 감지합니다. 이 범위에 포함되지 않더라도 경쟁사 대비 높거나 낮을 수 있습니다. TAB 3 상권별 비교를 통해 추가 확인하세요.
+
+    ---
+
+    **Q. 마감/미판매 비율이 갑자기 높아졌어요. 왜 그런가요?** <br>
+    A. 주요 원인 세 가지를 순서대로 확인하세요: <br>
+    1. 채널매니저 연동 오류로 인한 자동 마감 <br>
+    2. 현장에서 수동으로 마감 처리한 경우 <br>
+    3. 특정 날짜 블로킹 설정 실수 <br>
+    따라서 해당 지점 PMS에서 마감 처리 로그를 가장 먼저 확인하세요.
+
+    ---
+
+    **Q. 대시보드 데이터가 실시간인가요?** <br>
+    A. 데이터 추출 일시는 화면 상단 "추출 일시" 항목에서 확인 가능합니다. 일반적으로 당일 오전 기준 데이터가 반영됩니다. 실시간 모니터링이 필요한 경우에는 OTA 플랫폼 관리자 페이지를 직접 확인하세요.
+    """)
+    st.markdown(manual_md, unsafe_allow_html=True)
+
+tab1, tab2, tab3 = st.tabs(["지점별 가격 현황", "전 지점 다각도 랭킹", "상권별 상세 비교"])
+
+# =========================================================================
+# TAB 1: 지점별 가격 현황
+# =========================================================================
+with tab1:
+    st.markdown("<div class='main-title'>지점별 가격 노출 현황 및 점검 리포트</div>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style='background-color: #f8fafc; padding: 15px; border-radius: 5px; border-left: 4px solid #94a3b8; margin-bottom: 30px;'>
+        <p style='margin: 0; font-size: 14px; color: #334155; line-height: 1.6;'>
+            <b>분석 목적:</b> 자사 전 지점의 객실 요금의 누락 및 비정상적 고단가 데이터를 실시간으로 탐지하여, <b>가격 오설정으로 인한 기회 손실을 최소화</b>합니다.<br>
+            <b>활용 가이드:</b> 하이라이트된 '이상 고단가' 객실은 즉각적인 조치가 필요한 리스크 요인입니다. 표에 명시된 담당자 확인 후 정상 판매가로 조정하여 고객 이탈을 방어합니다.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 장기숙박 분리 및 중앙값 계산 (TAB 1 전용, 이미 상단에서 계산된 값 재활용)
+    long_df = our_df_all[is_long_stay].copy()
+    med_l = safe_median(long_df['숙박_n'], 500000)
+
+    # ── 가격 분포도 ──
+    st.markdown("<div class='section-header'>전체 가격 분포도 (마감 및 장기숙박 객실 제외)</div>", unsafe_allow_html=True)
+
+    mgr_options = sorted(our_df_all['현장담당자'].dropna().unique())
+    target_mgr = st.multiselect("특정 담당자 지점만 보기 (미선택 시 전체)", mgr_options)
+
+    plot_normal_df = normal_df if not target_mgr else normal_df[normal_df['현장담당자'].isin(target_mgr)]
+
+    # 대실 분포
+    st.markdown("##### 🕒 대실 금액")
+    df_d = plot_normal_df[plot_normal_df['대실상태'] != '마감']
+    if not df_d.empty:
+        fig_d = px.scatter(
+            df_d, x='숙소명', y='대실_n', color='사업본부',
+            hover_data=['객실타입', '대실상태', '대실금액'], height=400
+        )
+        fig_d.add_hline(y=med_d, line_dash="dash", line_color="#f43f5e",
+                        annotation_text=f"중앙값 ({med_d:,.0f}원)")
+        fig_d.update_layout(xaxis_title=None, yaxis_title="요금(원)",
+                             xaxis_showticklabels=False, margin=dict(l=0, r=0, t=10, b=0))
+        st.plotly_chart(fig_d, use_container_width=True)
     else:
-        st.sidebar.error("데이터에 '체크인' 컬럼이 존재하지 않습니다. 크롤러를 v3로 업데이트했는지 확인해주세요.")
-        
-    # ------------------------------------------------------------------
-    # 💡 [요약 데이터 계산] 장기숙박 격리 및 데이터 정합성 일치 로직
-    # ------------------------------------------------------------------
-    our_df_all = df_final[df_final['구분'] == '자사'].copy()
-    total_rooms = len(our_df_all)
+        st.info("판매 중인 대실 객실이 없습니다.")
 
-    # 🔥 [핵심 추가] 하단 상세표/차트와 기준을 완벽하게 맞추기 위해 장기숙박을 먼저 분리합니다!
-    long_stay_keywords = ['장기', '월간', '살기']
-    is_long_stay = our_df_all['객실타입'].str.contains('|'.join(long_stay_keywords), na=False) | (our_df_all['숙박_n'] >= 250000)
-    
-    normal_df = our_df_all[~is_long_stay].copy() # 🟢 순수 일반 숙박 데이터
+    st.markdown("<br>", unsafe_allow_html=True)
 
-    # 1. 중앙값 계산 (★이제 오염되지 않은 normal_df 기준으로 정확하게 계산합니다)
-    med_d = normal_df[normal_df['대실_n'] > 0]['대실_n'].median() if not normal_df[normal_df['대실_n'] > 0].empty else 30000
-    med_s = normal_df[normal_df['숙박_n'] > 0]['숙박_n'].median() if not normal_df[normal_df['숙박_n'] > 0].empty else 60000
-
-    # 2. 마감/미판매 집계 (전체 모니터링 대상 기준)
-    closed_df = our_df_all[
-        ((our_df_all['대실상태'] == '마감') | (our_df_all['대실_n'] == 0)) & 
-        ((our_df_all['숙박상태'] == '마감') | (our_df_all['숙박_n'] == 0))
-    ]
-    closed_cnt = len(closed_df)
-
-    # 3. 점검 필요(이상 단가) 집계 - ★하단 상세표와 100% 동일하게 normal_df 기준으로 카운트!
-    LOW_RATIO = 0.3
-    HIGH_RATIO = 2.0
-
-    LOW_LIMIT_D, HIGH_LIMIT_D = med_d * LOW_RATIO, med_d * HIGH_RATIO
-    LOW_LIMIT_S, HIGH_LIMIT_S = med_s * LOW_RATIO, med_s * HIGH_RATIO
-
-    # 판매중인 일반 객실 중 초고단가/초저단가 조건에 걸리는 건수 (하단 표 데이터와 100% 일치)
-    issue_d_cnt = len(normal_df[(normal_df['대실상태'] == '판매중') & (normal_df['대실_n'] > 0) & ((normal_df['대실_n'] < LOW_LIMIT_D) | (normal_df['대실_n'] > HIGH_LIMIT_D))][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates())
-    issue_s_cnt = len(normal_df[(normal_df['숙박상태'] == '판매중') & (normal_df['숙박_n'] > 0) & ((normal_df['숙박_n'] < LOW_LIMIT_S) | (normal_df['숙박_n'] > HIGH_LIMIT_S))][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates())
-
-    issue_cnt = issue_d_cnt + issue_s_cnt
-
-    # 상단 요약 (Overview)
-    st.markdown("<div class='overview-title'>📊 통합 운영 개요 (Overview)</div>", unsafe_allow_html=True)
-    
-    # 0 나누기 에러 방지 및 퍼센트 계산
-    percent_closed = (closed_cnt / total_rooms * 100) if total_rooms > 0 else 0
-    on_sale_cnt = total_rooms - closed_cnt
-    
-    # 스트림릿 순정 metric UI로 복귀
-    c1, c2, c3, c4 = st.columns(4)
-    
-    c1.metric("총 모니터링 객실", f"{total_rooms:,}개")
-    c2.metric("마감/미판매 (전체 하이픈)", f"{closed_cnt:,}개", f"전체의 {percent_closed:.1f}%", delta_color="off")
-    c3.metric("판매 중 객실", f"{on_sale_cnt:,}개")
-    
-    # 💡 순정 UI에서도 빨간색/초록색 경고 느낌을 살릴 수 있도록 delta 속성을 활용했습니다.
-    if issue_cnt > 0:
-        c4.metric("🚨 점검 필요 (이상 단가)", f"{issue_cnt:,}개", delta="확인 요망", delta_color="inverse")
+    # 숙박 분포
+    st.markdown("##### 🏨 숙박 금액")
+    df_s = plot_normal_df[plot_normal_df['숙박상태'] != '마감']
+    if not df_s.empty:
+        fig_s = px.scatter(
+            df_s, x='숙소명', y='숙박_n', color='사업본부',
+            hover_data=['객실타입', '숙박상태', '숙박금액'], height=400
+        )
+        fig_s.add_hline(y=med_s, line_dash="dash", line_color="#f43f5e",
+                        annotation_text=f"중앙값 ({med_s:,.0f}원)")
+        fig_s.update_layout(xaxis_title=None, yaxis_title="요금(원)",
+                             xaxis_showticklabels=False, margin=dict(l=0, r=0, t=10, b=0))
+        st.plotly_chart(fig_s, use_container_width=True)
     else:
-        c4.metric("✅ 점검 완료", f"{issue_cnt:,}개", delta="특이사항 없음", delta_color="normal")
-    
+        st.info("판매 중인 숙박 객실이 없습니다.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── 핵심 점검 사항 ──
+    st.markdown("<div class='section-header'>🚨 핵심 점검 사항 (가격 오입력 / 이상 단가 의심 객실)</div>", unsafe_allow_html=True)
+
+    df_high_d = normal_df[
+        (normal_df['대실상태'] == '판매중') & (normal_df['대실_n'] > HIGH_LIMIT_D)
+    ][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates().copy()
+
+    df_low_d = normal_df[
+        (normal_df['대실상태'] == '판매중') & (normal_df['대실_n'] > 0) & (normal_df['대실_n'] < LOW_LIMIT_D)
+    ][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates().copy()
+
+    df_high_s = normal_df[
+        (normal_df['숙박상태'] == '판매중') & (normal_df['숙박_n'] > HIGH_LIMIT_S)
+    ][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates().copy()
+
+    df_low_s = normal_df[
+        (normal_df['숙박상태'] == '판매중') & (normal_df['숙박_n'] > 0) & (normal_df['숙박_n'] < LOW_LIMIT_S)
+    ][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates().copy()
+
+    def format_issue_df(df, col_name):
+        if not df.empty:
+            df = df.copy()
+            df.rename(columns={col_name: '금액'}, inplace=True)
+            df['금액'] = df['금액'].apply(lambda x: f"{int(x):,}원")
+        return df
+
+    df_high_d = format_issue_df(df_high_d, '대실_n')
+    df_low_d  = format_issue_df(df_low_d,  '대실_n')
+    df_high_s = format_issue_df(df_high_s, '숙박_n')
+    df_low_s  = format_issue_df(df_low_s,  '숙박_n')
+
+    total_issues = len(df_high_d) + len(df_low_d) + len(df_high_s) + len(df_low_s)
+
+    with st.container():
+        st.markdown(f"""
+        <div style='margin-bottom: 25px; font-size: 14px; color: #334155; line-height: 1.6;'>
+            현재 정상 판매 범위를 벗어난 <b>'비정상적 고단가'</b> 또는 <b>'초저단가(오입력 의심)'</b> 객실이 <b>총 {total_issues}건</b> 발견되었습니다.<br>
+            <span style='color:#ef4444; font-weight:bold;'>(※ 요금에 표시된 하이픈(-)은 '판매 마감' 또는 '미운영'으로 간주하여 점검 대상에서 제외되었습니다.)</span>
+            <p style='margin-top: 8px; font-size: 13px; color: #64748b;'>
+                * 선정 기준: 현재 자사 일반 단가(중앙값) 대비 <b>{int(CONFIG['LOW_RATIO']*100)}% 미만</b>이거나 <b>{CONFIG['HIGH_RATIO']}배</b>를 초과하여 등록된 객실
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        def style_high(df): return df.style.apply(lambda x: ['background-color: #fee2e2; color: #991b1b'] * len(x), axis=1)
+        def style_low(df):  return df.style.apply(lambda x: ['background-color: #fef08a; color: #854d0e; font-weight: bold'] * len(x), axis=1)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"**[대실] 고단가 지점 ({len(df_high_d)}건)**")
+            if not df_high_d.empty:
+                st.dataframe(style_high(df_high_d), use_container_width=True, height=200, hide_index=True)
+            else:
+                st.success("🎉 대실 고단가 특이 사항 없음")
+
+        with col2:
+            st.markdown(f"**[숙박] 고단가 지점 ({len(df_high_s)}건)**")
+            if not df_high_s.empty:
+                st.dataframe(style_high(df_high_s), use_container_width=True, height=200, hide_index=True)
+            else:
+                st.success("🎉 숙박 고단가 특이 사항 없음")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        col3, col4 = st.columns(2)
+        with col3:
+            st.markdown(f"**[대실] 저단가 지점 ({len(df_low_d)}건)**")
+            if not df_low_d.empty:
+                st.dataframe(style_low(df_low_d), use_container_width=True, height=200, hide_index=True)
+            else:
+                st.success("🎉 대실 저단가 특이 사항 없음")
+
+        with col4:
+            st.markdown(f"**[숙박] 저단가 지점 ({len(df_low_s)}건)**")
+            if not df_low_s.empty:
+                st.dataframe(style_low(df_low_s), use_container_width=True, height=200, hide_index=True)
+            else:
+                st.success("🎉 숙박 저단가 특이 사항 없음")
+
+
+# =========================================================================
+# TAB 2: 전 지점 다각도 랭킹 분석
+# =========================================================================
+with tab2:
+    st.markdown("<div class='main-title'>전 지점 다각도 가격 전략 분석</div>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style='background-color: #f8fafc; padding: 15px; border-radius: 5px; border-left: 4px solid #3b82f6; margin-bottom: 30px;'>
+        <p style='margin: 0; font-size: 14px; color: #334155; line-height: 1.6;'>
+            <b> 분석 목적:</b> 진입 단가(최저가)부터 프리미엄(최고가) 구간까지, 자사 브랜드의 <b>전체적인 시장 포지셔닝과 가격을 전체적으로 확인</b>합니다.<br>
+            <b> 활용 가이드:</b> 기준 지표(최저/중앙/최고)를 전환하며 각 지점별 단가 서열이 본사의 의도된 전략과 일치하는지 점검합니다.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    mode = st.radio("분석 요금 구분", ["대실", "숙박"], horizontal=True)
+    val_c = '대실_n' if mode == "대실" else '숙박_n'
+    status_col = '대실상태' if mode == "대실" else '숙박상태'
+
+    active_rooms = normal_df[(normal_df[status_col] != '마감') & (normal_df[val_c] > 0)].copy()
+
+    if not active_rooms.empty:
+        g_min = active_rooms[val_c].min()
+        g_med = active_rooms[val_c].median()
+        g_max = active_rooms[val_c].max()
+        g_adr = active_rooms[val_c].mean()
+
+        st.markdown("<div class='section-header'>전체 브랜드 가격 포지셔닝 요약</div>", unsafe_allow_html=True)
+        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+
+        with kpi1:
+            st.metric(label=f"브랜드 최저가 ({mode})", value=f"{g_min:,.0f}원")
+            st.caption("고객 유입을 위한 최소 진입 가격")
+        with kpi2:
+            st.metric(label=f"브랜드 중앙값 ({mode})", value=f"{g_med:,.0f}원")
+            st.caption("가장 보편적인 표준 판매 가격")
+        with kpi3:
+            st.metric(label=f"브랜드 최고가 ({mode})", value=f"{g_max:,.0f}원")
+            st.caption("프리미엄/스위트룸 최대 단가")
+        with kpi4:
+            label_name = "전체 ADR (평균객단가)" if mode == "숙박" else "전체 평균 대실가격"
+            st.metric(label=label_name, value=f"{g_adr:,.0f}원",
+                      delta=f"중앙값 대비 {g_adr - g_med:+,.0f}", delta_color="normal")
+            st.caption("수익성 판단의 기준 지표")
+    else:
+        st.info(f"판매 중인 {mode} 객실 데이터가 없습니다.")
+
     st.divider()
 
-    # ══════════════════════════════════════════════════════════════════
-    # 📖 메인 화면 토글형 매뉴얼 (클릭 이동 목차 + FAQ 가독성 최적화)
-    # ══════════════════════════════════════════════════════════════════
-    import textwrap
-    
-    with st.expander("💡 실무자를 위한 대시보드 200% 활용 및 분석 프로세스 가이드 (클릭하여 펼치기)", expanded=False):
-        manual_md = textwrap.dedent("""
-        ### 📊 HSO OTA 가격 모니터링 대시보드
-        #### 활용 매뉴얼 및 데이터 분석 프로세스
+    st.markdown("<div class='section-header'>지점별 가격 서열 랭킹</div>", unsafe_allow_html=True)
 
-        > **문서 버전:** v1.0 | **작성 기준일:** 2026-05-26  
-        > **대상 독자:** 본사 운영/가격 관리자, 지점 현장 담당자
+    agg_type = st.radio("순위 산정 기준 지표", ["최저가", "중앙값", "최고가"], horizontal=True)
 
-        ---
+    hint_map = {
+        "최저가": "💡 <b>최저가 순위:</b> 상권 내에서 가장 공격적인 '미끼 상품(진입 단가)'을 운영 중인 지점을 확인합니다.",
+        "중앙값": "💡 <b>중앙값 순위:</b> 지점별 '주력 상품'의 가격대를 비교하여 실질적인 단가(현실 단가) 수준을 파악합니다.",
+        "최고가": "💡 <b>최고가 순위:</b> 프리미엄 객실(파티룸, 스위트 등)의 가격을 비교하여 고단가 유도 현황을 파악합니다.",
+    }
+    st.markdown(f"<div style='font-size: 13px; color: #64748b; margin-top: -10px; margin-bottom: 20px;'>{hint_map[agg_type]}</div>", unsafe_allow_html=True)
 
-        #### 📑 목차 (클릭 시 해당 항목으로 이동합니다)
-        1. [대시보드 개요 및 핵심 지표 해설](#sec1)
-        2. [TAB별 데이터 해석 및 액션 플랜](#sec2)
-        3. [주간·월간 전략 분석 프로세스](#sec3)
-        4. [자주 묻는 질문 (FAQ)](#sec4)
-
-        ---
-
-        <a id="sec1"></a>
-        #### 1. 대시보드 개요 및 핵심 지표 해설
-
-        ##### 1-1. 상단 요약 카드 (Overview) 읽는 법
-        대시보드를 열면 가장 먼저 4개의 카드가 보입니다. 이 카드만 봐도 **오늘의 전체 건강 상태**를 30초 안에 파악할 수 있습니다.
-
-        | 카드 명칭 | 의미 | 정상 범위 기준 |
-        |-----------|------|----------------|
-        | **총 모니터링 객실** | 현재 OTA에 노출 중인 전체 객실(상품) 수 | 전일 대비 급격한 증감 없음 |
-        | **마감/미판매 (전체 하이픈)** | 판매 불가 처리된 객실 비율 | 당일 기준 11% 이하 권장 |
-        | **판매 중 객실** | 실시간 판매 가능한 객실 수 | 총 객실의 85% 이상 유지 |
-        | **⚠️ 점검 필요 (이상 단가)** | 중앙값 대비 30% 미만 또는 2배 초과 객실 수 | **0건이 목표. 1건이라도 있으면 즉시 확인** |
-
-        > 💡 **초보자 팁:** "점검 필요" 카드에 빨간색 숫자가 표시되면, 그날 업무의 **1순위**는 해당 건 처리입니다. 다른 탭을 보기 전에 이것부터 해결하세요.
-
-        ---
-
-        <a id="sec2"></a>
-        #### 2. TAB별 데이터 해석 및 액션 플랜
-
-        ##### 📍 TAB 1 — 지점별 가격 현황
-
-        ##### 🔴 이상 고단가 발생 시 (중앙값 2배 초과)
-        **비즈니스 리스크:**
-        * OTA 플랫폼 알고리즘에 의해 **검색 노출 순위 하락** → 매출 직접 감소
-        * 고객이 가격 비교 후 경쟁사로 이탈 → **이탈률(Bounce Rate) 상승**
-        * 비정상 가격이 장시간 방치되면 플랫폼으로부터 **페널티 또는 계약 이슈** 발생 가능
-
-        **원인 분류 및 해결 방법:**
-        | 원인 | 확인 방법 | 조치 |
-        |------|-----------|------|
-        | 오입력 (세금 중복 적용, 단위 오류 등) | 현장 담당자에게 PMS 원본 확인 요청 | 즉시 수정 후 OTA 동기화 |
-        | 시스템 연동 오류 (채널매니저 버그) | 채널매니저 관리자 확인 | 기술 지원팀 티켓 발행 |
-        | 의도적 프리미엄 설정 | 담당자 확인 | 전략 타당성 검토 후 유지 또는 수정 |
-        | 특정 날짜 이벤트 설정 실수 | 달력 기준 날짜별 요금 확인 | 해당 날짜 요금 일괄 초기화 |
-        
-        > ⏱️ **대응 목표 시간:** 이상 고단가 발견 후 **2시간 이내** 원인 파악 및 수정 완료
-
-        ##### 🔵 이상 저단가 발생 시 (중앙값 30% 미만)
-        **비즈니스 리스크:**
-        * 실제 가치보다 낮은 가격으로 예약이 몰릴 경우 **수익 손실 직결**
-        * 타 OTA 채널과의 가격 형평성 위반으로 **최저가 보장 정책 위반** 가능
-        * 브랜드 가치 훼손 — 지속 노출 시 고객이 "저가 브랜드"로 인식
-
-        **원인 분류 및 해결 방법:**
-        | 원인 | 확인 방법 | 조치 |
-        |------|-----------|------|
-        | 숫자 오입력 (1만원대 → 1천원대) | PMS 확인 | 즉시 수정, 이미 예약된 건 개별 검토 |
-        | 특가/프로모션 설정 실수 | 프로모션 기간·대상 확인 | 프로모션 즉시 종료 또는 범위 조정 |
-        | 장기숙박 필터 미작동 | 대시보드 필터 조건 재확인 | 개발팀에 필터 로직 검토 요청 |
-
-        ---
-
-        <a id="sec3"></a>
-        #### 3. 주간·월간 전략 분석 프로세스
-
-        ##### 📅 주간 분석 (매주 월요일 오전)
-        * [ ] 지난 주 이상 단가 발생 건수 집계 및 전주 대비 증감
-        * [ ] 지점별 중앙값 변화 추이 (상승/하락 지점 식별)
-        * [ ] 상권별 경쟁 포지션 변화 확인
-        * [ ] 마감/미판매 비율이 지속적으로 높은 지점 → 원인 분석
-        * [ ] 이번 주 특이 이벤트(연휴, 지역 축제 등) 고려한 단가 조정 필요 여부
-
-        ##### 📅 월간 분석 (매월 첫째 주)
-        * [ ] 월간 이상 단가 발생 패턴 분석 (특정 지점·상품·요일 집중 여부)
-        * [ ] 전체 지점 중앙값 분포 변화 — 브랜드 전체 포지셔닝 방향 확인
-        * [ ] 최저가·중앙값·최고가 랭킹 TOP 5 / BOTTOM 5 지점 분석
-        * [ ] 경쟁사 가격 변동 트렌드 분석 — 시장 평균 단가 상승/하락 여부
-
-        ---
-
-        <a id="sec4"></a>
-        #### 4. 자주 묻는 질문 (FAQ)
-
-        **Q. "점검 필요" 건수가 0인데도 가격이 이상한 것 같아요.** <br>
-        A. 대시보드는 '중앙값 대비 30% 미만 또는 2배 초과'를 이상 단가로 감지합니다. 이 범위에 포함되지 않더라도 경쟁사 대비 높거나 낮을 수 있습니다. TAB 3 상권별 비교를 통해 추가 확인하세요.
-
-        ---
-
-        **Q. 마감/미판매 비율이 갑자기 높아졌어요. 왜 그런가요?** <br>
-        A. 주요 원인 세 가지를 순서대로 확인하세요: <br>
-        1. 채널매니저 연동 오류로 인한 자동 마감 <br>
-        2. 현장에서 수동으로 마감 처리한 경우 <br>
-        3. 특정 날짜 블로킹 설정 실수 <br>
-        따라서 해당 지점 PMS에서 마감 처리 로그를 가장 먼저 확인하세요.
-
-        ---
-
-        **Q. 대시보드 데이터가 실시간인가요?** <br>
-        A. 데이터 추출 일시는 화면 상단 "추출 일시" 항목에서 확인 가능합니다. 일반적으로 당일 오전 기준 데이터가 반영됩니다. 실시간 모니터링이 필요한 경우에는 OTA 플랫폼 관리자 페이지를 직접 확인하세요.
-        """)
-        
-        st.markdown(manual_md, unsafe_allow_html=True)
-
-    tab1, tab2, tab3 = st.tabs(["지점별 가격 현황", "전 지점 다각도 랭킹", "상권별 상세 비교"])
-
-    # =========================================================================
-    # TAB 1: 지점별 가격 현황
-    # =========================================================================
-    with tab1:
-        st.markdown("<div class='main-title'>지점별 가격 노출 현황 및 점검 리포트</div>", unsafe_allow_html=True)
-        st.markdown("""
-        <div style='background-color: #f8fafc; padding: 15px; border-radius: 5px; border-left: 4px solid #94a3b8; margin-bottom: 30px;'>
-            <p style='margin: 0; font-size: 14px; color: #334155; line-height: 1.6;'>
-                <b>분석 목적:</b> 자사 전 지점의 객실 요금의 누락 및 비정상적 고단가 데이터를 실시간으로 탐지하여, <b>가격 오설정으로 인한 기회 손실을 최소화</b>합니다.<br>
-                <b>활용 가이드:</b> 하이라이트된 '이상 고단가' 객실은 즉각적인 조치가 필요한 리스크 요인입니다. 표에 명시된 담당자 확인 후 정상 판매가로 조정하여 고객 이탈을 방어합니다.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # 💡 [핵심] 차트를 그리기 전에 장기숙박 데이터를 먼저 분리하고 중앙값을 계산합니다!
-        long_stay_keywords = ['장기', '월간', '살기']
-        is_long_stay = our_df_all['객실타입'].str.contains('|'.join(long_stay_keywords), na=False) | (our_df_all['숙박_n'] >= 250000)
-        
-        normal_df = our_df_all[~is_long_stay].copy() # 일반 숙박
-        long_df = our_df_all[is_long_stay].copy()    # 장기 숙박
-
-        # 분리된 데이터를 바탕으로 정확한 중앙값 사전 계산
-        med_d = normal_df[normal_df['대실_n'] > 0]['대실_n'].median() if not normal_df[normal_df['대실_n'] > 0].empty else 30000
-        med_s = normal_df[normal_df['숙박_n'] > 0]['숙박_n'].median() if not normal_df[normal_df['숙박_n'] > 0].empty else 60000
-        med_l = long_df[long_df['숙박_n'] > 0]['숙박_n'].median() if not long_df[long_df['숙박_n'] > 0].empty else 500000
-
-
-        # ══════════════════════════════════════════════════════════════════
-        # 📊 2단 세로 가격 분포도 (마감 객실 및 장기숙박 제외)
-        # ══════════════════════════════════════════════════════════════════
-        st.markdown("<div class='section-header'>전체 가격 분포도 (마감 및 장기숙박 객실 제외)</div>", unsafe_allow_html=True)
-        target_mgr = st.multiselect("특정 담당자 지점만 보기 (미선택 시 전체)", sorted(our_df_all['현장담당자'].dropna().unique()))
-        
-        # 필터 적용된 데이터 (장기숙박이 완벽히 유기된 순수 일반 데이터만 사용!)
-        plot_normal_df = normal_df if not target_mgr else normal_df[normal_df['현장담당자'].isin(target_mgr)]
-
-        # ── [1층] 대실 분포 ──
-        st.markdown("##### 🕒 대실 금액 ")
-        df_d = plot_normal_df[plot_normal_df['대실상태'] != '마감']
-        if not df_d.empty:
-            fig_d = px.scatter(df_d, x='숙소명', y='대실_n', color='사업본부', hover_data=['객실타입', '대실상태', '대실금액'], height=400)
-            fig_d.add_hline(y=med_d, line_dash="dash", line_color="#f43f5e", annotation_text=f"중앙값 ({med_d:,.0f}원)")
-            fig_d.update_layout(xaxis_title=None, yaxis_title="요금(원)", xaxis_showticklabels=False, margin=dict(l=0, r=0, t=10, b=0))
-            st.plotly_chart(fig_d, use_container_width=True)
-        else:
-            st.info("판매 중인 대실 객실이 없습니다.")
-            
-        st.markdown("<br>", unsafe_allow_html=True) # 살짝 띄어쓰기
-
-        # ── [2층] 숙박 분포 ──
-        st.markdown("##### 🏨 숙박 금액")
-        df_s = plot_normal_df[plot_normal_df['숙박상태'] != '마감']
-        if not df_s.empty:
-            fig_s = px.scatter(df_s, x='숙소명', y='숙박_n', color='사업본부', hover_data=['객실타입', '숙박상태', '숙박금액'], height=400)
-            fig_s.add_hline(y=med_s, line_dash="dash", line_color="#f43f5e", annotation_text=f"중앙값 ({med_s:,.0f}원)")
-            fig_s.update_layout(xaxis_title=None, yaxis_title="요금(원)", xaxis_showticklabels=False, margin=dict(l=0, r=0, t=10, b=0))
-            st.plotly_chart(fig_s, use_container_width=True)
-        else:
-            st.info("판매 중인 숙박 객실이 없습니다.")
-            
-        st.markdown("<br>", unsafe_allow_html=True) # 살짝 띄어쓰기
-
-        # ══════════════════════════════════════════════════════════════════
-        # 🚨 핵심 점검 사항 (가격 오입력 및 이상 단가 의심)
-        # ══════════════════════════════════════════════════════════════════
-        st.markdown("<div class='section-header'>🚨 핵심 점검 사항 (가격 오입력 / 이상 단가 의심 객실)</div>", unsafe_allow_html=True)
-        
-        # 💡 동적 중앙값 계산 (🚨 장기숙박이 제외된 normal_df 사용!)
-        med_d = normal_df[normal_df['대실_n'] > 0]['대실_n'].median() if not normal_df[normal_df['대실_n'] > 0].empty else 30000
-        med_s = normal_df[normal_df['숙박_n'] > 0]['숙박_n'].median() if not normal_df[normal_df['숙박_n'] > 0].empty else 60000
-
-        # [설정값]
-        LOW_RATIO = 0.3   # 중앙값의 30% 미만 (초저단가/오입력)
-        HIGH_RATIO = 2.0  # 중앙값의 2배 초과 (초고단가)
-
-        LOW_LIMIT_D, HIGH_LIMIT_D = med_d * LOW_RATIO, med_d * HIGH_RATIO
-        LOW_LIMIT_S, HIGH_LIMIT_S = med_s * LOW_RATIO, med_s * HIGH_RATIO
-
-        # 💡 4가지 케이스로 데이터 완벽 분리 및 중복 제거 (🚨 normal_df 기준으로만 필터링!)
-        df_high_d = normal_df[(normal_df['대실상태'] == '판매중') & (normal_df['대실_n'] > HIGH_LIMIT_D)][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates().copy()
-        df_low_d = normal_df[(normal_df['대실상태'] == '판매중') & (normal_df['대실_n'] > 0) & (normal_df['대실_n'] < LOW_LIMIT_D)][['현장담당자', '숙소명', '객실타입', '대실_n']].drop_duplicates().copy()
-        
-        df_high_s = normal_df[(normal_df['숙박상태'] == '판매중') & (normal_df['숙박_n'] > HIGH_LIMIT_S)][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates().copy()
-        df_low_s = normal_df[(normal_df['숙박상태'] == '판매중') & (normal_df['숙박_n'] > 0) & (normal_df['숙박_n'] < LOW_LIMIT_S)][['현장담당자', '숙소명', '객실타입', '숙박_n']].drop_duplicates().copy()
-        # 💡 가격 포맷팅 및 컬럼명 통일 함수
-        def format_df(df, col_name):
-            if not df.empty:
-                df.rename(columns={col_name: '금액'}, inplace=True)
-                df['금액'] = df['금액'].apply(lambda x: f"{int(x):,}원")
-            return df
-
-        df_high_d = format_df(df_high_d, '대실_n')
-        df_low_d = format_df(df_low_d, '대실_n')
-        df_high_s = format_df(df_high_s, '숙박_n')
-        df_low_s = format_df(df_low_s, '숙박_n')
-
-        total_issues = len(df_high_d) + len(df_low_d) + len(df_high_s) + len(df_low_s)
-
-        with st.container():
-            st.markdown(f"""
-            <div style='margin-bottom: 25px; font-size: 14px; color: #334155; line-height: 1.6;'>
-                현재 정상 판매 범위를 벗어난 <b>'비정상적 고단가'</b> 또는 <b>'초저단가(오입력 의심)'</b> 객실이 <b>총 {total_issues}건</b> 발견되었습니다.<br>
-                <span style='color:#ef4444; font-weight:bold;'>(※ 요금에 표시된 하이픈(-)은 '판매 마감' 또는 '미운영'으로 간주하여 점검 대상에서 제외되었습니다.)</span>
-                <p style='margin-top: 8px; font-size: 13px; color: #64748b;'>
-                    * 선정 기준: 현재 자사 일반 단가(중앙값) 대비 <b>{int(LOW_RATIO*100)}% 미만</b>이거나 <b>{HIGH_RATIO}배</b>를 초과하여 등록된 객실
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # 표 색상 스타일 적용 함수
-            def style_high(df): return df.style.apply(lambda x: ['background-color: #fee2e2; color: #991b1b'] * len(x), axis=1)
-            def style_low(df): return df.style.apply(lambda x: ['background-color: #fef08a; color: #854d0e; font-weight: bold'] * len(x), axis=1)
-
-            # ── [1층] 고단가 점검 구역 ──
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown(f"**[대실] 고단가 지점 ({len(df_high_d)}건)**")
-                if not df_high_d.empty:
-                    # hide_index=True 를 통해 맨 앞 숫자를 없앱니다.
-                    st.dataframe(style_high(df_high_d), use_container_width=True, height=200, hide_index=True)
-                else:
-                    st.success("🎉 대실 고단가 특이 사항 없음")
-            
-            with col2:
-                st.markdown(f"**[숙박] 고단가 지점 ({len(df_high_s)}건)**")
-                if not df_high_s.empty:
-                    st.dataframe(style_high(df_high_s), use_container_width=True, height=200, hide_index=True)
-                else:
-                    st.success("🎉 숙박 고단가 특이 사항 없음")
-
-            st.markdown("<br>", unsafe_allow_html=True)
-
-            # ── [2층] 저단가(오입력) 점검 구역 ──
-            col3, col4 = st.columns(2)
-            with col3:
-                st.markdown(f"**[대실] 저단가 지점 ({len(df_low_d)}건)**")
-                if not df_low_d.empty:
-                    st.dataframe(style_low(df_low_d), use_container_width=True, height=200, hide_index=True)
-                else:
-                    st.success("🎉 대실 저단가 특이 사항 없음")
-                    
-            with col4:
-                st.markdown(f"**[숙박] 저단가 지점 ({len(df_low_s)}건)**")
-                if not df_low_s.empty:
-                    st.dataframe(style_low(df_low_s), use_container_width=True, height=200, hide_index=True)
-                else:
-                    st.success("🎉 숙박 저단가 특이 사항 없음")
-                    
-    # =========================================================================
-    # TAB 2: 전 지점 다각도 랭킹 분석 (전략 모니터링 보드)
-    # =========================================================================
-    with tab2:
-        st.markdown("<div class='main-title'>전 지점 다각도 가격 전략 분석</div>", unsafe_allow_html=True)
-        
-        st.markdown("""
-        <div style='background-color: #f8fafc; padding: 15px; border-radius: 5px; border-left: 4px solid #3b82f6; margin-bottom: 30px;'>
-            <p style='margin: 0; font-size: 14px; color: #334155; line-height: 1.6;'>
-                <b> 분석 목적:</b> 진입 단가(최저가)부터 프리미엄(최고가) 구간까지, 자사 브랜드의 <b>전체적인 시장 포지셔닝과 가격을 전체적으로 확인</b>합니다.<br>
-                <b> 활용 가이드:</b> 기준 지표(최저/중앙/최고)를 전환하며 각 지점별 단가 서열이 본사의 의도된 전략과 일치하는지 점검합니다.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-        # 1. 가격 구분 선택 (상단 배치)
-        mode = st.radio("분석 요금 구분", ["대실", "숙박"], horizontal=True)
-        val_c = '대실_n' if mode == "대실" else '숙박_n'
-        
-        # 💡 [버그 수정 1] our_df_all 대신 장기숙박이 제거된 normal_df 사용!
-        # 💡 [버그 수정 2] 금액이 0원인 것뿐만 아니라, 상태가 '마감'인 것도 확실하게 걸러냅니다!
-        status_col = '대실상태' if mode == "대실" else '숙박상태'
-        active_rooms = normal_df[(normal_df[status_col] != '마감') & (normal_df[val_c] > 0)].copy()
-
-        # 🌟 2. 핵심 지표 4대 박스 (ADR 포함)
-        if not active_rooms.empty:
-            g_min = active_rooms[val_c].min()
-            g_med = active_rooms[val_c].median()
-            g_max = active_rooms[val_c].max()
-            g_adr = active_rooms[val_c].mean() # ADR (Average Daily Rate)
-
-            st.markdown("<div class='section-header'>전체 브랜드 가격 포지셔닝 요약</div>", unsafe_allow_html=True)
-            kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-            
-            with kpi1:
-                st.metric(label=f"브랜드 최저가 ({mode})", value=f"{g_min:,.0f}원")
-                st.caption("고객 유입을 위한 최소 진입 가격")
-            with kpi2:
-                st.metric(label=f"브랜드 중앙값 ({mode})", value=f"{g_med:,.0f}원")
-                st.caption("가장 보편적인 표준 판매 가격")
-            with kpi3:
-                st.metric(label=f"브랜드 최고가 ({mode})", value=f"{g_max:,.0f}원")
-                st.caption("프리미엄/스위트룸 최대 단가")
-            with kpi4:
-                # 숙박일 경우 ADR로 표기, 대실일 경우 평균가로 표기
-                label_name = "전체 ADR (평균객단가)" if mode == "숙박" else "전체 평균 대실가격"
-                st.metric(label=label_name, value=f"{g_adr:,.0f}원", delta=f"중앙값 대비 {g_adr-g_med:+,.0f}", delta_color="normal")
-                st.caption("수익성 판단의 기준 지표")
-        
-        st.divider()
-
-        # 3. 상세 랭킹 분석
-        st.markdown("<div class='section-header'>지점별 가격 서열 랭킹</div>", unsafe_allow_html=True)
-        
-        # 라디오 버튼 (상단 배치)
-        agg_type = st.radio("순위 산정 기준 지표", ["최저가", "중앙값", "최고가"], horizontal=True)
-        
-        # 🌟 지능형 해석 문구 (버튼 하단에 작고 세련되게 배치)
+    if not active_rooms.empty:
         if agg_type == "최저가":
-            st.markdown("<div style='font-size: 13px; color: #64748b; margin-top: -10px; margin-bottom: 20px;'>💡 <b>최저가 순위:</b> 상권 내에서 가장 공격적인 '미끼 상품(진입 단가)'을 운영 중인 지점을 확인합니다.</div>", unsafe_allow_html=True)
+            rank_df = active_rooms.groupby('숙소명')[val_c].min().reset_index()
         elif agg_type == "중앙값":
-            st.markdown("<div style='font-size: 13px; color: #64748b; margin-top: -10px; margin-bottom: 20px;'>💡 <b>중앙값 순위:</b> 지점별 '주력 상품'의 가격대를 비교하여 실질적인 단가(현실 단가) 수준을 파악합니다.</div>", unsafe_allow_html=True)
+            rank_df = active_rooms.groupby('숙소명')[val_c].median().reset_index()
         else:
-            st.markdown("<div style='font-size: 13px; color: #64748b; margin-top: -10px; margin-bottom: 20px;'>💡 <b>최고가 순위:</b> 프리미엄 객실(파티룸, 스위트 등)의 가격을 비교하여 고단가 유도 현황을 파악합니다.</div>", unsafe_allow_html=True)
+            rank_df = active_rooms.groupby('숙소명')[val_c].max().reset_index()
 
-        # 랭킹 데이터 계산
-        if not active_rooms.empty:
-            if agg_type == "최저가":
-                rank_df = active_rooms.groupby('숙소명')[val_c].min().reset_index()
-            elif agg_type == "중앙값":
-                rank_df = active_rooms.groupby('숙소명')[val_c].median().reset_index()
-            else:
-                rank_df = active_rooms.groupby('숙소명')[val_c].max().reset_index()
+        rank_df = rank_df.sort_values(val_c, ascending=True)
 
-            rank_df = rank_df.sort_values(val_c, ascending=True)
-            
-            # 그래프 생성 (가로 막대형)
-            fig_r = px.bar(rank_df, 
-                              y='숙소명', 
-                              x=val_c, 
-                              orientation='h',
-                              text_auto=',.0f',
-                              color=val_c,
-                              color_continuous_scale='Blues',
-                              height=max(400, len(rank_df)*25)) 
-            
-            # 기준선 추가 (선택한 지표의 전체 중앙값)
-            ref_line = rank_df[val_c].median()
-            fig_r.add_vline(x=ref_line, line_dash="dash", line_color="#ef4444", 
-                            annotation_text=f"전체 기준선 ({ref_line:,.0f})", annotation_position="top right")
-            
-            fig_r.update_layout(yaxis_title=None, xaxis_title="금액(원)", coloraxis_showscale=False)
-            st.plotly_chart(fig_r, use_container_width=True)
-        else:
-            st.info("조건에 맞는 판매 중인 객실 데이터가 없습니다.")
+        fig_r = px.bar(
+            rank_df, y='숙소명', x=val_c, orientation='h',
+            text_auto=',.0f', color=val_c, color_continuous_scale='Blues',
+            height=max(400, len(rank_df) * 25)
+        )
+        ref_line = rank_df[val_c].median()
+        fig_r.add_vline(x=ref_line, line_dash="dash", line_color="#ef4444",
+                        annotation_text=f"전체 기준선 ({ref_line:,.0f})",
+                        annotation_position="top right")
+        fig_r.update_layout(yaxis_title=None, xaxis_title="금액(원)", coloraxis_showscale=False)
+        st.plotly_chart(fig_r, use_container_width=True)
+    else:
+        st.info("조건에 맞는 판매 중인 객실 데이터가 없습니다.")
 
-        st.divider()
+    st.divider()
 
-        # 지점별 심층 분석
-        st.markdown("<div class='section-header'>지점별 상세 분석 (객실 단위)</div>", unsafe_allow_html=True)
-        
-        # 💡 [버그 수정 3] 셀렉트박스 목록도 장기숙박이 배제된 normal_df 기준으로 표출
-        sel_hotel = st.selectbox("심층 분석할 지점을 선택하세요", sorted(normal_df['숙소명'].unique()))
-        
+    st.markdown("<div class='section-header'>지점별 상세 분석 (객실 단위)</div>", unsafe_allow_html=True)
+
+    hotel_options = sorted(normal_df['숙소명'].dropna().unique())
+    if not hotel_options:
+        st.info("분석 가능한 지점 데이터가 없습니다.")
+    else:
+        sel_hotel = st.selectbox("심층 분석할 지점을 선택하세요", hotel_options)
+
         if sel_hotel:
-            # 💡 [버그 수정 4] 선택된 지점의 데이터도 normal_df 에서 추출
             target_df = normal_df[normal_df['숙소명'] == sel_hotel].copy()
-            
+
             st.markdown("**객실타입별 요금 비교 차트**")
             if not target_df.empty:
-                melted = target_df.melt(id_vars=['객실타입'], value_vars=['대실_n', '숙박_n'], var_name='유형', value_name='가격')
-                
-                # 💡 [버그 방어막 추가] 마감되어서 가격이 0원인 데이터는 그래프에서 아예 그리지 않고 삭제합니다!
-                melted = melted[melted['가격'] > 0] 
-                
+                melted = target_df.melt(id_vars=['객실타입'], value_vars=['대실_n', '숙박_n'],
+                                        var_name='유형', value_name='가격')
+                melted = melted[melted['가격'] > 0]
                 melted['유형'] = melted['유형'].replace({'대실_n': '대실', '숙박_n': '숙박'})
-                
-                fig_bar = px.bar(melted, y='객실타입', x='가격', color='유형', barmode='group', orientation='h',
-                                 text_auto=',.0f', color_discrete_map={'대실': '#3b82f6', '숙박': '#10b981'}, height=450)
-                fig_bar.update_layout(yaxis_title=None, xaxis_title="요금(원)")
-                st.plotly_chart(fig_bar, use_container_width=True)
 
-            # --- [표 1 & 2] 지점별 요금 상세 포맷팅 ---
+                if not melted.empty:
+                    fig_bar = px.bar(
+                        melted, y='객실타입', x='가격', color='유형', barmode='group',
+                        orientation='h', text_auto=',.0f',
+                        color_discrete_map={'대실': '#3b82f6', '숙박': '#10b981'}, height=450
+                    )
+                    fig_bar.update_layout(yaxis_title=None, xaxis_title="요금(원)")
+                    st.plotly_chart(fig_bar, use_container_width=True)
+                else:
+                    st.info("판매 중인 객실 데이터가 없습니다.")
+
             col_t1, col_t2 = st.columns(2)
-            
             with col_t1:
                 st.markdown("**[대실] 요금 상세**")
-                # 보여주기용 데이터 복사 및 포맷팅
                 disp_t1 = target_df[['객실타입', '대실상태', '대실금액']].copy()
-                disp_t1['대실금액'] = disp_t1['대실금액'].apply(lambda x: f"{int(float(str(x).replace(',','').replace('원',''))):,}원" if str(x).replace(',','').replace('.','').replace('원','').isdigit() else x)
+                disp_t1['대실금액'] = disp_t1['대실금액'].apply(format_money)
                 st.dataframe(disp_t1.reset_index(drop=True), use_container_width=True)
-                
+
             with col_t2:
                 st.markdown("**[숙박] 요금 상세**")
-                # 보여주기용 데이터 복사 및 포맷팅
                 disp_t2 = target_df[['객실타입', '숙박상태', '숙박금액']].copy()
-                disp_t2['숙박금액'] = disp_t2['숙박금액'].apply(lambda x: f"{int(float(str(x).replace(',','').replace('원',''))):,}원" if str(x).replace(',','').replace('.','').replace('원','').isdigit() else x)
+                disp_t2['숙박금액'] = disp_t2['숙박금액'].apply(format_money)
                 st.dataframe(disp_t2.reset_index(drop=True), use_container_width=True)
 
-    # =========================================================================
-    # TAB 3: 상권별 경쟁 분석 — 3층 구조 (스코어보드 → 드릴다운 → 액션)
-    # =========================================================================
-    with tab3:
-        st.markdown("<div class='main-title'>상권별 경쟁 분석</div>", unsafe_allow_html=True)
-        
-        st.markdown("""
-        <div style='background-color: #f8fafc; padding: 15px; border-radius: 5px; border-left: 4px solid #10b981; margin-bottom: 30px;'>
-            <p style='margin: 0; font-size: 14px; color: #334155; line-height: 1.6;'>
-                <b>분석 목적:</b> 특정 상권 내 핵심 타겟 경쟁사와의 1:1 객실 단가 매칭을 통해 <b>실질적인 가격 경쟁 우위 및 마진 확보 구간을 분석</b>합니다.<br>
-                <b>활용 가이드:</b> 객실 서열별 요금 격차를 확인하여, 경쟁 우위(저가) 구간은 단가를 인상해 마진을 극대화하고 열위(고가) 구간은 적정 방어 단가로 조정하는 지표로 활용합니다.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
 
-        # ── 공통 설정 ─────────────────────────────────────────────────────
-        mode_t3  = st.radio("분석 요금 기준", ["대실", "숙박"], horizontal=True, key="t3_mode")
-        val_c3   = '대실_n' if mode_t3 == "대실" else '숙박_n'
-        price_lbl = '대실금액' if mode_t3 == "대실" else '숙박금액'
-        THRESHOLD_RED   = 0.10   # 경쟁사 대비 10% 초과 → 빨강 (경쟁사 우위)
-        THRESHOLD_GREEN = -0.10  # 경쟁사 대비 10% 이하 → 초록 (자사 우위)
+# =========================================================================
+# TAB 3: 상권별 경쟁 분석
+# =========================================================================
+with tab3:
+    st.markdown("<div class='main-title'>상권별 경쟁 분석</div>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style='background-color: #f8fafc; padding: 15px; border-radius: 5px; border-left: 4px solid #10b981; margin-bottom: 30px;'>
+        <p style='margin: 0; font-size: 14px; color: #334155; line-height: 1.6;'>
+            <b>분석 목적:</b> 특정 상권 내 핵심 타겟 경쟁사와의 1:1 객실 단가 매칭을 통해 <b>실질적인 가격 경쟁 우위 및 마진 확보 구간을 분석</b>합니다.<br>
+            <b>활용 가이드:</b> 객실 서열별 요금 격차를 확인하여, 경쟁 우위(저가) 구간은 단가를 인상해 마진을 극대화하고 열위(고가) 구간은 적정 방어 단가로 조정하는 지표로 활용합니다.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
 
-        # 유효 데이터(0원 제외)
-        valid_df = df_final[df_final[val_c3] > 0].copy()
-        # 상권 목록
-        all_areas = sorted([a for a in df_final['상권명'].dropna().unique()])
+    mode_t3   = st.radio("분석 요금 기준", ["대실", "숙박"], horizontal=True, key="t3_mode")
+    val_c3    = '대실_n' if mode_t3 == "대실" else '숙박_n'
+    THRESHOLD_RED  = CONFIG["THRESHOLD_RED"]
+    THRESHOLD_GREEN = CONFIG["THRESHOLD_BLUE"]
 
-        # ── 상권별 가격 격차 사전 계산 ────────────────────────────────────
+    valid_df  = df_final[df_final[val_c3] > 0].copy()
+    all_areas = sorted([a for a in df_final['상권명'].dropna().unique()])
+
+    if not all_areas:
+        st.warning("상권 데이터가 없습니다. comp_match.csv의 '상권명' 컬럼을 확인해 주세요.")
+    else:
+        # ── 상권별 요약 계산 ──
         area_summary = []
         for area in all_areas:
-            a_df = valid_df[valid_df['상권명'] == area]
+            a_df      = valid_df[valid_df['상권명'] == area]
             our_rows  = a_df[a_df['구분'] == '자사']
             comp_rows = a_df[a_df['구분'] == '경쟁사']
             if our_rows.empty or comp_rows.empty:
                 continue
-            our_min  = our_rows[val_c3].min()
-            our_avg  = our_rows[val_c3].mean()
-            comp_avg = comp_rows[val_c3].mean()
-            gap_pct  = (our_avg - comp_avg) / comp_avg if comp_avg else 0
+
+            our_avg  = safe_mean(our_rows[val_c3])
+            comp_avg = safe_mean(comp_rows[val_c3])
+            if comp_avg == 0:
+                continue
+
+            gap_pct = (our_avg - comp_avg) / comp_avg
 
             if gap_pct > THRESHOLD_RED:
-                status, color_cls = "경쟁사 우위", "🔴"
+                status = "경쟁사 우위"
             elif gap_pct < THRESHOLD_GREEN:
-                status, color_cls = "자사 우위", "🟢"
+                status = "자사 우위"
             else:
-                status, color_cls = "비슷", "🟡"
+                status = "비슷"
 
             area_summary.append({
-                "상권명": area,
-                "status": status,
-                "icon": color_cls,
-                "gap_pct": gap_pct,
-                "our_cnt": our_rows['숙소명'].nunique(),
+                "상권명":   area,
+                "status":   status,
+                "gap_pct":  gap_pct,
+                "our_cnt":  our_rows['숙소명'].nunique(),
                 "comp_cnt": comp_rows['숙소명'].nunique(),
-                "our_avg": our_avg,
+                "our_avg":  our_avg,
                 "comp_avg": comp_avg,
             })
         area_sum_df = pd.DataFrame(area_summary)
 
-        # ══════════════════════════════════════════════════════════════════
-        # LAYER 1 — 상권 경쟁력 스코어보드
-        # ══════════════════════════════════════════════════════════════════
-        st.markdown("<div class='section-header'> 전체 상권 경쟁력 스코어보드</div>",
-                    unsafe_allow_html=True)
+        # ── LAYER 1: 스코어보드 ──
+        st.markdown("<div class='section-header'> 전체 상권 경쟁력 스코어보드</div>", unsafe_allow_html=True)
         st.markdown(
             "<div class='criteria'>"
             "🔴 경쟁사 우위: 자사 평균가가 경쟁사보다 10% 이상 높음 (가격 경쟁력 열세) &nbsp;|&nbsp; "
@@ -659,7 +809,6 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         )
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # 스코어보드 집계 요약 (최상단 3개 수치)
         if not area_sum_df.empty:
             n_red    = (area_sum_df['status'] == '경쟁사 우위').sum()
             n_yellow = (area_sum_df['status'] == '비슷').sum()
@@ -670,53 +819,33 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
             sb3.metric("🟢 가격 경쟁력 우위 상권", f"{n_green}개")
             st.markdown("<br>", unsafe_allow_html=True)
 
-# 상권 카드 그리드
-        if area_sum_df.empty:
-            st.warning("경쟁사 데이터가 있는 상권이 없습니다.")
-        else:
-            # 위험 순서로 정렬 (gap_pct 내림차순)
+            # 상권 카드 그리드
             area_sum_df_sorted = area_sum_df.sort_values('gap_pct', ascending=False)
             cols_per_row = 3
-            rows = [area_sum_df_sorted.iloc[i:i+cols_per_row]
+            rows = [area_sum_df_sorted.iloc[i:i + cols_per_row]
                     for i in range(0, len(area_sum_df_sorted), cols_per_row)]
 
             for row_data in rows:
                 cols = st.columns(cols_per_row)
                 for col, (_, row) in zip(cols, row_data.iterrows()):
-                    
-                    # 🌟 [추가 1] 상권별 자사/경쟁사 평균 계산
-                    c_df = valid_df[valid_df['상권명'] == row['상권명']]
-                    our_avg_area = c_df[c_df['구분'] == '자사'][val_c3].mean()
-                    comp_avg_area = c_df[c_df['구분'] == '경쟁사'][val_c3].mean()
-                    
-                    our_avg_area = 0 if pd.isna(our_avg_area) else our_avg_area
-                    comp_avg_area = 0 if pd.isna(comp_avg_area) else comp_avg_area
-
-                    gap_sign  = "+" if row['gap_pct'] >= 0 else ""
-                    gap_str   = f"{gap_sign}{row['gap_pct']*100:.1f}%"
+                    gap_sign = "+" if row['gap_pct'] >= 0 else ""
+                    gap_str  = f"{gap_sign}{row['gap_pct'] * 100:.1f}%"
 
                     if row['status'] == '경쟁사 우위':
-                        border_color = "#ef4444"
-                        bg_color     = "#fff5f5"
-                        gap_color    = "#c0392b"
-                        status_html  = "<span style='background:#fde8e8;color:#c0392b;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;'>경쟁사 우위</span>"
+                        border_color, bg_color, gap_color = "#ef4444", "#fff5f5", "#c0392b"
+                        status_html = "<span style='background:#fde8e8;color:#c0392b;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;'>경쟁사 우위</span>"
                     elif row['status'] == '자사 우위':
-                        border_color = "#22c55e"
-                        bg_color     = "#f0fdf4"
-                        gap_color    = "#16a34a"
-                        status_html  = "<span style='background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;'>자사 우위</span>"
+                        border_color, bg_color, gap_color = "#22c55e", "#f0fdf4", "#16a34a"
+                        status_html = "<span style='background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;'>자사 우위</span>"
                     else:
-                        border_color = "#f59e0b"
-                        bg_color     = "#fffbeb"
-                        gap_color    = "#b45309"
-                        status_html  = "<span style='background:#fef3c7;color:#b45309;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;'>비슷</span>"
+                        border_color, bg_color, gap_color = "#f59e0b", "#fffbeb", "#b45309"
+                        status_html = "<span style='background:#fef3c7;color:#b45309;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;'>비슷</span>"
 
                     with col:
                         st.markdown(f"""
                         <div style="background:{bg_color};border:1.5px solid {border_color};
                                     border-radius:10px;padding:14px 16px;margin-bottom:4px;">
-                          <div style="font-size:14px;font-weight:700;color:#1e293b;
-                                      margin-bottom:8px;">{row['상권명']}</div>
+                          <div style="font-size:14px;font-weight:700;color:#1e293b;margin-bottom:8px;">{row['상권명']}</div>
                           <div style="margin-bottom:6px;">{status_html}</div>
                           <div style="font-size:12px;color:#64748b;margin-bottom:2px;">
                             자사 {row['our_cnt']}개 &nbsp;·&nbsp; 경쟁사 {row['comp_cnt']}개
@@ -724,25 +853,20 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
                           <div style="font-size:13px;font-weight:700;color:{gap_color};">
                             자사 평균가 {gap_str} 차이
                           </div>
-                          <div style="font-size: 13px; color: #64748b; margin-top: 4px; font-weight: normal;">
-                            자사 {our_avg_area:,.0f}원 · 경쟁사 {comp_avg_area:,.0f}원
+                          <div style="font-size:13px;color:#64748b;margin-top:4px;font-weight:normal;">
+                            자사 {row['our_avg']:,.0f}원 · 경쟁사 {row['comp_avg']:,.0f}원
                           </div>
                         </div>
                         """, unsafe_allow_html=True)
+        else:
+            st.warning("경쟁사 데이터가 있는 상권이 없습니다.")
 
         st.divider()
-        # ══════════════════════════════════════════════════════════════════
-        # LAYER 2 — 선택 상권 드릴다운
-        # ══════════════════════════════════════════════════════════════════
-        st.markdown("<div class='section-header'> 상권 선택 후 상세 분석</div>",
-                    unsafe_allow_html=True)
 
-        sel_area = st.selectbox(
-            "📍 분석할 상권을 선택하세요",
-            options=all_areas,
-            key="t3_area"
-        )
+        # ── LAYER 2: 선택 상권 드릴다운 ──
+        st.markdown("<div class='section-header'> 상권 선택 후 상세 분석</div>", unsafe_allow_html=True)
 
+        sel_area  = st.selectbox("📍 분석할 상권을 선택하세요", options=all_areas, key="t3_area")
         area_data = valid_df[valid_df['상권명'] == sel_area].copy()
 
         if area_data.empty:
@@ -751,19 +875,19 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
             our_area  = area_data[area_data['구분'] == '자사']
             comp_area = area_data[area_data['구분'] == '경쟁사']
 
-            # ── 2-A. 판정 요약 3박스 ───────────────────────────────────
+            # 판정 요약 3박스
             if not our_area.empty and not comp_area.empty:
-                our_avg_d  = our_area['대실_n'][our_area['대실_n'] > 0].mean()
-                comp_avg_d = comp_area['대실_n'][comp_area['대실_n'] > 0].mean()
-                our_avg_s  = our_area['숙박_n'][our_area['숙박_n'] > 0].mean()
-                comp_avg_s = comp_area['숙박_n'][comp_area['숙박_n'] > 0].mean()
+                our_avg_d  = safe_mean(our_area['대실_n'])
+                comp_avg_d = safe_mean(comp_area['대실_n'])
+                our_avg_s  = safe_mean(our_area['숙박_n'])
+                comp_avg_s = safe_mean(comp_area['숙박_n'])
 
                 def gap_text(our, comp):
-                    if our == 0 or comp == 0 or (pd.isna(our)) or (pd.isna(comp)):
+                    if our == 0 or comp == 0:
                         return "데이터 없음", "#888", "-"
-                    g = (our - comp) / comp
+                    g    = (our - comp) / comp
                     sign = "+" if g >= 0 else ""
-                    txt  = f"{sign}{g*100:.1f}%"
+                    txt  = f"{sign}{g * 100:.1f}%"
                     if g > THRESHOLD_RED:
                         return txt, "#c0392b", "자사 고단가 ↑"
                     elif g < THRESHOLD_GREEN:
@@ -774,29 +898,28 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
                 d_txt, d_col, d_sub = gap_text(our_avg_d, comp_avg_d)
                 s_txt, s_col, s_sub = gap_text(our_avg_s, comp_avg_s)
 
-                verdict = "조치 필요 🚨" if d_col == "#c0392b" or s_col == "#c0392b" else \
-                          "양호 ✅"      if d_col == "#16a34a" and s_col == "#16a34a" else \
-                          "모니터링 👀"
+                verdict = (
+                    "조치 필요 🚨" if d_col == "#c0392b" or s_col == "#c0392b" else
+                    "양호 ✅"      if d_col == "#16a34a" and s_col == "#16a34a" else
+                    "모니터링 👀"
+                )
 
                 mc1, mc2, mc3 = st.columns(3)
-                with mc1:
-                    st.markdown(f"""
-                    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;
-                                padding:16px;text-align:center;">
-                      <div style="font-size:11px;color:#94a3b8;margin-bottom:4px;">대실 가격 격차</div>
-                      <div style="font-size:26px;font-weight:700;color:{d_col};">{d_txt}</div>
-                      <div style="font-size:11px;color:{d_col};margin-top:2px;">{d_sub}</div>
-                    </div>""", unsafe_allow_html=True)
-                with mc2:
-                    st.markdown(f"""
-                    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;
-                                padding:16px;text-align:center;">
-                      <div style="font-size:11px;color:#94a3b8;margin-bottom:4px;">숙박 가격 격차</div>
-                      <div style="font-size:26px;font-weight:700;color:{s_col};">{s_txt}</div>
-                      <div style="font-size:11px;color:{s_col};margin-top:2px;">{s_sub}</div>
-                    </div>""", unsafe_allow_html=True)
+                for mcol, txt, color, sub, label in [
+                    (mc1, d_txt, d_col, d_sub, "대실 가격 격차"),
+                    (mc2, s_txt, s_col, s_sub, "숙박 가격 격차"),
+                ]:
+                    with mcol:
+                        st.markdown(f"""
+                        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;
+                                    padding:16px;text-align:center;">
+                          <div style="font-size:11px;color:#94a3b8;margin-bottom:4px;">{label}</div>
+                          <div style="font-size:26px;font-weight:700;color:{color};">{txt}</div>
+                          <div style="font-size:11px;color:{color};margin-top:2px;">{sub}</div>
+                        </div>""", unsafe_allow_html=True)
+
+                v_color = "#c0392b" if "조치" in verdict else "#16a34a" if "양호" in verdict else "#b45309"
                 with mc3:
-                    v_color = "#c0392b" if "조치" in verdict else "#16a34a" if "양호" in verdict else "#b45309"
                     st.markdown(f"""
                     <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;
                                 padding:16px;text-align:center;">
@@ -806,50 +929,43 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
 
                 st.markdown("<br>", unsafe_allow_html=True)
 
-            # ── 2-B. 지점별 최저가 비교 가로 바 차트 ─────────────────
-            st.markdown("<div class='section-header' style='font-size:15px;'>지점별 최저가 비교</div>",
-                        unsafe_allow_html=True)
-            st.markdown(
-                f"<div class='criteria'>자사(빨강)와 경쟁사(파랑)의 {mode_t3} 최저가를 나란히 비교합니다.</div>",
-                unsafe_allow_html=True
-            )
+            # 지점별 최저가 비교 차트
+            st.markdown("<div class='section-header' style='font-size:15px;'>지점별 최저가 비교</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='criteria'>자사(빨강)와 경쟁사(파랑)의 {mode_t3} 최저가를 나란히 비교합니다.</div>", unsafe_allow_html=True)
 
-            # 지점별 최저가 집계
             bar_df = area_data.groupby(['숙소명', '구분'])[val_c3].min().reset_index()
             bar_df.columns = ['숙소명', '구분', '최저가']
             bar_df = bar_df.sort_values('최저가', ascending=True)
 
-            fig_bar = px.bar(
-                bar_df, y='숙소명', x='최저가',
-                color='구분',
-                orientation='h',
-                text_auto=',.0f',
-                color_discrete_map={'자사': '#ef4444', '경쟁사': '#3b82f6'},
-                height=max(300, len(bar_df) * 36),
-                labels={'최저가': f'{mode_t3} 최저가 (원)', '숙소명': ''},
-            )
-            # 경쟁사 평균선 추가
-            if not comp_area.empty:
-                comp_min_avg = comp_area.groupby('숙소명')[val_c3].min().mean()
-                fig_bar.add_vline(
-                    x=comp_min_avg, line_dash="dash", line_color="#3b82f6",
-                    annotation_text=f"경쟁사 평균 ({comp_min_avg:,.0f}원)",
-                    annotation_position="top right",
+            if not bar_df.empty:
+                fig_bar = px.bar(
+                    bar_df, y='숙소명', x='최저가', color='구분', orientation='h',
+                    text_auto=',.0f',
+                    color_discrete_map={'자사': '#ef4444', '경쟁사': '#3b82f6'},
+                    height=max(300, len(bar_df) * 36),
+                    labels={'최저가': f'{mode_t3} 최저가 (원)', '숙소명': ''},
                 )
-            fig_bar.update_layout(
-                legend=dict(orientation='h', yanchor='bottom', y=1.02),
-                yaxis_title=None, xaxis_tickformat=',',
-            )
-            st.plotly_chart(fig_bar, use_container_width=True)
+                if not comp_area.empty:
+                    comp_min_avg = comp_area.groupby('숙소명')[val_c3].min().mean()
+                    if comp_min_avg > 0:
+                        fig_bar.add_vline(
+                            x=comp_min_avg, line_dash="dash", line_color="#3b82f6",
+                            annotation_text=f"경쟁사 평균 ({comp_min_avg:,.0f}원)",
+                            annotation_position="top right",
+                        )
+                fig_bar.update_layout(
+                    legend=dict(orientation='h', yanchor='bottom', y=1.02),
+                    yaxis_title=None, xaxis_tickformat=',',
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
 
             st.divider()
 
-            # ── 2-C. 1:1 헤드투헤드 비교 ──────────────────────────────
-            st.markdown("<div class='section-header' style='font-size:15px;'>1:1 라이벌 헤드투헤드</div>",
-                        unsafe_allow_html=True)
+            # 1:1 헤드투헤드 비교
+            st.markdown("<div class='section-header' style='font-size:15px;'>1:1 라이벌 헤드투헤드</div>", unsafe_allow_html=True)
 
-            our_hotels  = sorted(our_area['숙소명'].unique())
-            comp_hotels = sorted(comp_area['숙소명'].unique())
+            our_hotels  = sorted(our_area['숙소명'].dropna().unique())
+            comp_hotels = sorted(comp_area['숙소명'].dropna().unique())
 
             if our_hotels and comp_hotels:
                 hh1, hh2 = st.columns(2)
@@ -860,93 +976,74 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
 
                 vs_df = area_data[area_data['숙소명'].isin([sel_our, sel_comp])].copy()
 
-                fig_vs = px.bar(
-                    vs_df, x='객실타입', y=val_c3,
-                    color='숙소명', barmode='group',
-                    text_auto=',.0f',
-                    color_discrete_map={sel_our: '#ef4444', sel_comp: '#3b82f6'},
-                    labels={val_c3: f'{mode_t3} 요금 (원)', '객실타입': ''},
-                    height=400,
-                )
-                fig_vs.update_layout(
-                    xaxis_tickangle=-30,
-                    legend=dict(orientation='h', yanchor='bottom', y=1.02),
-                )
-                st.plotly_chart(fig_vs, use_container_width=True)
+                if not vs_df.empty:
+                    fig_vs = px.bar(
+                        vs_df, x='객실타입', y=val_c3, color='숙소명', barmode='group',
+                        text_auto=',.0f',
+                        color_discrete_map={sel_our: '#ef4444', sel_comp: '#3b82f6'},
+                        labels={val_c3: f'{mode_t3} 요금 (원)', '객실타입': ''},
+                        height=400,
+                    )
+                    fig_vs.update_layout(
+                        xaxis_tickangle=-30,
+                        legend=dict(orientation='h', yanchor='bottom', y=1.02),
+                    )
+                    st.plotly_chart(fig_vs, use_container_width=True)
 
-                # 헤드투헤드 수치 비교 테이블
-                our_stats  = vs_df[vs_df['숙소명'] == sel_our][val_c3]
-                comp_stats = vs_df[vs_df['숙소명'] == sel_comp][val_c3]
-                hh_cols = st.columns(4)
-                for metric, our_val, comp_val in [
-                    ("최저가", our_stats.min(), comp_stats.min()),
-                    ("평균가", our_stats.mean(), comp_stats.mean()),
-                    ("중앙값", our_stats.median(), comp_stats.median()),
-                    ("최고가", our_stats.max(), comp_stats.max()),
-                ]:
-                    if our_val > 0 and comp_val > 0:
-                        diff = (our_val - comp_val) / comp_val * 100
-                        arrow = "↑" if diff > 0 else "↓"
-                        diff_color = "#c0392b" if diff > 0 else "#16a34a"
-                        with hh_cols[["최저가","평균가","중앙값","최고가"].index(metric)]:
-                            st.markdown(f"""
-                            <div style="background:#f8fafc;border:1px solid #e2e8f0;
-                                        border-radius:8px;padding:12px;text-align:center;">
-                              <div style="font-size:11px;color:#94a3b8;margin-bottom:4px;">{metric}</div>
-                              <div style="font-size:13px;color:#ef4444;font-weight:600;">
-                                자사 {our_val:,.0f}원</div>
-                              <div style="font-size:13px;color:#3b82f6;">
-                                경쟁 {comp_val:,.0f}원</div>
-                              <div style="font-size:12px;font-weight:700;color:{diff_color};margin-top:4px;">
-                                {arrow} {abs(diff):.1f}%</div>
-                            </div>""", unsafe_allow_html=True)
+                    # 수치 비교 테이블
+                    our_stats  = vs_df[vs_df['숙소명'] == sel_our][val_c3]
+                    comp_stats = vs_df[vs_df['숙소명'] == sel_comp][val_c3]
+                    hh_cols    = st.columns(4)
+                    metrics    = [("최저가", our_stats.min(), comp_stats.min()),
+                                  ("평균가", our_stats.mean(), comp_stats.mean()),
+                                  ("중앙값", our_stats.median(), comp_stats.median()),
+                                  ("최고가", our_stats.max(), comp_stats.max())]
+
+                    for idx, (metric, our_val, comp_val) in enumerate(metrics):
+                        if our_val > 0 and comp_val > 0 and not pd.isna(our_val) and not pd.isna(comp_val):
+                            diff   = (our_val - comp_val) / comp_val * 100
+                            arrow  = "↑" if diff > 0 else "↓"
+                            d_color = "#c0392b" if diff > 0 else "#16a34a"
+                            with hh_cols[idx]:
+                                st.markdown(f"""
+                                <div style="background:#f8fafc;border:1px solid #e2e8f0;
+                                            border-radius:8px;padding:12px;text-align:center;">
+                                  <div style="font-size:11px;color:#94a3b8;margin-bottom:4px;">{metric}</div>
+                                  <div style="font-size:13px;color:#ef4444;font-weight:600;">자사 {our_val:,.0f}원</div>
+                                  <div style="font-size:13px;color:#3b82f6;">경쟁 {comp_val:,.0f}원</div>
+                                  <div style="font-size:12px;font-weight:700;color:{d_color};margin-top:4px;">{arrow} {abs(diff):.1f}%</div>
+                                </div>""", unsafe_allow_html=True)
             else:
                 st.info("이 상권에는 자사와 경쟁사가 함께 존재하지 않아 1:1 비교가 불가합니다.")
 
             st.divider()
 
-# ── 2-D. 상권 내 전체 요금표 ──────────────────────────────
-            st.markdown("<div class='section-header' style='font-size:15px;'>상권 내 전체 객실 요금표</div>",
-                        unsafe_allow_html=True)
-            disp_cols = ['구분', '숙소명', '객실타입', '대실금액', '숙박금액']
-            disp_df   = df_final[df_final['상권명'] == sel_area][disp_cols].sort_values(['구분', '숙소명'])
-            
-            disp_df_show = disp_df.copy()
-            
-            def format_money(val):
-                try:
-                    # 💡 추가된 로직: 숫자로 바꾼 값이 0이면 바로 하이픈 반환
-                    num = float(val)
-                    if num == 0:
-                        return "-"
-                    return f"{int(num):,}원"
-                except:
-                    # 데이터가 비어있거나 숫자가 아닐 경우
-                    return "-"
-            
-            disp_df_show['대실금액'] = disp_df_show['대실금액'].apply(format_money)
-            disp_df_show['숙박금액'] = disp_df_show['숙박금액'].apply(format_money)
-            
-            disp_df_show = disp_df_show.reset_index(drop=True)
+            # 상권 내 전체 요금표
+            st.markdown("<div class='section-header' style='font-size:15px;'>상권 내 전체 객실 요금표</div>", unsafe_allow_html=True)
 
-            # 💡 [새로 추가된 부분] 자사와 경쟁사 행 색상을 칠해주는 함수
+            disp_cols = ['구분', '숙소명', '객실타입', '대실금액', '숙박금액']
+            # 존재하는 컬럼만 선택 (방어 코드)
+            disp_cols = [c for c in disp_cols if c in df_final.columns]
+            disp_df   = df_final[df_final['상권명'] == sel_area][disp_cols].sort_values(['구분', '숙소명'])
+
+            disp_df_show = disp_df.copy().reset_index(drop=True)
+            if '대실금액' in disp_df_show.columns:
+                disp_df_show['대실금액'] = disp_df_show['대실금액'].apply(format_money)
+            if '숙박금액' in disp_df_show.columns:
+                disp_df_show['숙박금액'] = disp_df_show['숙박금액'].apply(format_money)
+
             def style_gubun(row):
-                if row['구분'] == '자사':
-                    # 자사는 시원한 파란색 톤
+                if row.get('구분') == '자사':
                     return ['background-color: #e0f2fe; color: #075985'] * len(row)
-                elif row['구분'] == '경쟁사':
-                    # 경쟁사는 눈에 띄는 빨간색 톤
+                elif row.get('구분') == '경쟁사':
                     return ['background-color: #fee2e2; color: #991b1b'] * len(row)
                 return [''] * len(row)
 
-            # 💡 [수정된 부분] 데이터프레임에 style.apply를 씌워서 대시보드에 서빙!
             st.dataframe(disp_df_show.style.apply(style_gubun, axis=1), use_container_width=True, height=300)
 
         st.divider()
 
-       # ══════════════════════════════════════════════════════════════════
-        # LAYER 3 — 즉시 조치 필요 지점 액션 포인트 (고도화 버전)
-        # ══════════════════════════════════════════════════════════════════
+        # ── LAYER 3: 즉시 조치 필요 지점 ──
         st.markdown("<div class='section-header'>🚨 즉시 조치 필요 지점 (전체 상권 통합)</div>", unsafe_allow_html=True)
         st.markdown(
             "<div class='criteria'>"
@@ -957,79 +1054,68 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
         )
         st.markdown("<br>", unsafe_allow_html=True)
 
-        THRESHOLD_RED = 0.10  # 10% 이상 비쌀 때 (조치 필요)
-        THRESHOLD_BLUE = -0.10 # 10% 이상 쌀 때 (단가 인상 기회)
-
         action_rows = []
-        
-        # valid_df, all_areas, val_c3, mode_t3 등은 기존 변수 그대로 사용
         for area in all_areas:
-            a_df = valid_df[valid_df['상권명'] == area]
+            a_df      = valid_df[valid_df['상권명'] == area]
             our_rows  = a_df[a_df['구분'] == '자사']
             comp_rows = a_df[a_df['구분'] == '경쟁사']
-            
+
             if our_rows.empty or comp_rows.empty:
                 continue
 
-            # 경쟁사 지표 계산 (평균 및 최저가)
-            comp_avg_area = comp_rows[val_c3].mean()
-            comp_min_area = comp_rows[val_c3].min()
+            comp_avg_area = safe_mean(comp_rows[val_c3])
+            comp_min_area = comp_rows[val_c3].min() if not comp_rows.empty else 0
 
-            for hotel in our_rows['숙소명'].unique():
-                h_df     = our_rows[our_rows['숙소명'] == hotel]
-                our_avg  = h_df[val_c3].mean()
-                our_min  = h_df[val_c3].min() # 진입 단가 비교용
-                
-                if comp_avg_area == 0:
-                    continue
-                    
-                gap = (our_avg - comp_avg_area) / comp_avg_area
-                
-                # 10% 이상 비싸거나(경고), 10% 이상 싸거나(기회)
-                if gap > THRESHOLD_RED or gap < THRESHOLD_BLUE:
-                    mgr = h_df['현장담당자'].dropna().iloc[0] if '현장담당자' in h_df.columns and not h_df['현장담당자'].dropna().empty else '미배정'
-                    
-                    # 상태 판별
+            if comp_avg_area == 0:
+                continue
+
+            for hotel in our_rows['숙소명'].dropna().unique():
+                h_df    = our_rows[our_rows['숙소명'] == hotel]
+                our_avg = safe_mean(h_df[val_c3])
+                our_min = h_df[val_c3].min() if not h_df.empty else 0
+                gap     = (our_avg - comp_avg_area) / comp_avg_area
+
+                if gap > THRESHOLD_RED or gap < THRESHOLD_GREEN:
+                    mgr = (
+                        h_df['현장담당자'].dropna().iloc[0]
+                        if '현장담당자' in h_df.columns and not h_df['현장담당자'].dropna().empty
+                        else '미배정'
+                    )
                     status = "🔴 단가 인하 검토" if gap > 0 else "🔵 단가 인상 기회"
-                    
                     action_rows.append({
-                        "상권명":      area,
-                        "지점명":      hotel,
-                        "담당자":      mgr,
-                        "조치 권고":    status,
-                        f"자사 {mode_t3} 평균가": int(our_avg),
-                        "경쟁사 평균가":  int(comp_avg_area),
-                        "격차 (%)":    f"{gap*100:+.1f}%",
-                        "자사 최저가": int(our_min),
-                        "경쟁사 최저가": int(comp_min_area),
-                        "_gap_abs":    abs(gap), # 정렬용 절대값
+                        "상권명":                   area,
+                        "지점명":                   hotel,
+                        "담당자":                   mgr,
+                        "조치 권고":                status,
+                        f"자사 {mode_t3} 평균가":   int(our_avg),
+                        "경쟁사 평균가":             int(comp_avg_area),
+                        "격차 (%)":                 f"{gap * 100:+.1f}%",
+                        "자사 최저가":               int(our_min),
+                        "경쟁사 최저가":             int(comp_min_area),
+                        "_gap_abs":                 abs(gap),
                     })
 
         if action_rows:
             action_df = pd.DataFrame(action_rows).sort_values('_gap_abs', ascending=False).drop(columns=['_gap_abs'])
-            
-            # 💡 [새로 추가된 부분] 가격 컬럼들에 천 단위 콤마(,)만 삽입 (원 표시 제외)
-            # mode_t3 변수가 포함된 컬럼명도 대응하기 위해 리스트를 유연하게 잡습니다.
+
             price_cols_l3 = [c for c in action_df.columns if '평균가' in c or '최저가' in c]
-            
             for col in price_cols_l3:
                 action_df[col] = action_df[col].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "-")
 
-            # 위험/기회 건수 카운트
-            red_cnt = len(action_df[action_df['조치 권고'].str.contains("인하")])
+            red_cnt  = len(action_df[action_df['조치 권고'].str.contains("인하")])
             blue_cnt = len(action_df[action_df['조치 권고'].str.contains("인상")])
-            
+
             st.markdown(
                 f"<div style='font-size: 16px; font-weight: bold; color: #0f172a; margin-bottom: 15px;'>"
                 f"총 {red_cnt}개 지점이 고단가 경고, {blue_cnt}개 지점이 단가 인상 기회로 포착되었습니다."
-                f"</div>", 
-                unsafe_allow_html=True)
-            
-            # 판다스 스타일링 함수
+                f"</div>",
+                unsafe_allow_html=True
+            )
+
             def style_action(row):
-                if "🔴" in row['조치 권고']:
+                if "🔴" in str(row.get('조치 권고', '')):
                     return ['background-color: #fee2e2; color: #991b1b'] * len(row)
-                elif "🔵" in row['조치 권고']:
+                elif "🔵" in str(row.get('조치 권고', '')):
                     return ['background-color: #e0f2fe; color: #075985'] * len(row)
                 return [''] * len(row)
 
@@ -1044,6 +1130,3 @@ if os.path.exists(FILE_P) and os.path.exists(FILE_M) and os.path.exists(FILE_C):
             )
         else:
             st.success(f"현재 {mode_t3} 기준, 상권 대비 10% 이상 차이나는 특이 지점이 없습니다.")
-
-else:
-    st.error("🚨 데이터 연동 에러: 서버의 'data' 폴더에 필수 CSV 파일 3개가 모두 있는지 확인해 주세요.")
